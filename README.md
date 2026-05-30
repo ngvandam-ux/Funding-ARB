@@ -1,6 +1,9 @@
-# Funding-Rate Arb Scanner — Handoff Package
+# Funding-ARB
 
-This folder is the complete spec for Claude Code to build a funding-rate arbitrage scanner + paper-trade engine.
+Funding-rate arbitrage scanner — paper trading engine. Built with Claude Code.
+
+---
+
 
 ## What's in here
 

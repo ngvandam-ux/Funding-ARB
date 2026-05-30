@@ -1,0 +1,20 @@
+# Netlify build config for the Funding-Arb SPA (Vite + React + pnpm).
+# Site is connected to GitHub (ngvandam-ux/Funding-ARB); pushes to `main`
+# auto-build and deploy. Env vars (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY)
+# are set in the Netlify UI — Site settings → Environment variables.
+# NEVER put SUPABASE_SERVICE_ROLE_KEY here: it would ship in the browser bundle.
+
+[build]
+  command = "pnpm build"
+  publish = "dist"
+
+[build.environment]
+  # Use the same pnpm major we develop with; corepack provides it.
+  NODE_VERSION = "22"
+  PNPM_VERSION = "11"
+
+# SPA fallback: serve index.html for client-side routes (avoids 404 on refresh).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

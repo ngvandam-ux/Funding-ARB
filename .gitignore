@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+dist-ssr/
+*.local
+
+# env — NEVER commit real secrets (CLAUDE.md hard rule #2)
+.env
+.env.local
+.env.*.local
+.env.local.save
+*.save
+*.bak
+
+# typescript build info
+*.tsbuildinfo
+
+# supabase local CLI state (machine-specific; not source)
+supabase/.temp/
+supabase/.branches/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/

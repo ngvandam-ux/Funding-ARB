@@ -1,0 +1,18 @@
+{
+  "_comment": "Seed list for the instruments table. Start narrow, expand after v1 ships. The base_symbol must be identical across venues so the detector can join them.",
+  "instruments": [
+    { "venue_id": "hyperliquid",     "venue_symbol": "BTC",           "base_symbol": "BTC", "quote_symbol": "USD",  "tier": "major" },
+    { "venue_id": "hyperliquid",     "venue_symbol": "ETH",           "base_symbol": "ETH", "quote_symbol": "USD",  "tier": "major" },
+    { "venue_id": "hyperliquid",     "venue_symbol": "SOL",           "base_symbol": "SOL", "quote_symbol": "USD",  "tier": "major" },
+    { "venue_id": "hyperliquid",     "venue_symbol": "HYPE",          "base_symbol": "HYPE","quote_symbol": "USD",  "tier": "mid"   },
+    { "venue_id": "binance_futures", "venue_symbol": "BTCUSDT",       "base_symbol": "BTC", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "binance_futures", "venue_symbol": "ETHUSDT",       "base_symbol": "ETH", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "binance_futures", "venue_symbol": "SOLUSDT",       "base_symbol": "SOL", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "bybit",           "venue_symbol": "BTCUSDT",       "base_symbol": "BTC", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "bybit",           "venue_symbol": "ETHUSDT",       "base_symbol": "ETH", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "bybit",           "venue_symbol": "SOLUSDT",       "base_symbol": "SOL", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "okx",             "venue_symbol": "BTC-USDT-SWAP", "base_symbol": "BTC", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "okx",             "venue_symbol": "ETH-USDT-SWAP", "base_symbol": "ETH", "quote_symbol": "USDT", "tier": "major" },
+    { "venue_id": "okx",             "venue_symbol": "SOL-USDT-SWAP", "base_symbol": "SOL", "quote_symbol": "USDT", "tier": "major" }
+  ]
+}

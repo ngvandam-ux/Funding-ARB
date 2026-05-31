@@ -105,22 +105,35 @@ const apr = Number(item.fundingRate) * 3 * 365 * 100
 
 ## 4. OKX
 
-### Funding rate
+> **Corrected 2026-05-31** (live-verified during Session 2). The original notes
+> below the line were wrong on two counts; `ingest-okx` uses the corrected
+> endpoints. Keep this section in sync with `supabase/functions/ingest-okx/`.
+
+### Funding rate — PER-INSTRUMENT ONLY
 
 - **Endpoint:** `GET https://www.okx.com/api/v5/public/funding-rate?instId=BTC-USDT-SWAP`
-- **Per-instrument**, so we hit it once per tracked symbol or use the batch endpoint:
-- **Batch:** `GET https://www.okx.com/api/v5/public/funding-rate?instType=SWAP` — returns all swaps. Preferred.
-- **Auth:** none
+- **Auth:** none. Returns `{ code, data: [{ instId, fundingRate, fundingTime, nextFundingTime, ... }] }`.
+- ⚠️ **Batch is NOT supported.** `funding-rate?instType=SWAP` (no `instId`) returns
+  `code 50014` (parameter error). Query once per tracked symbol (3 calls/tick for v1).
 
-### Tickers (for mark + OI)
+### Mark price, index price, open interest (mark/index are NOT in `market/tickers`)
 
-- **Endpoint:** `GET https://www.okx.com/api/v5/market/tickers?instType=SWAP`
+`market/tickers?instType=SWAP` carries only `last/askPx/bidPx/...` — **no `markPx`,
+no `idxPx`.** Source them separately (all public, batch by `instType=SWAP`):
+
+- **Mark:** `GET https://www.okx.com/api/v5/public/mark-price?instType=SWAP` → `[{ instId, markPx }]`.
+- **Index:** `GET https://www.okx.com/api/v5/market/index-tickers?quoteCcy=USDT` → `[{ instId, idxPx }]`.
+  Index `instId` is the **underlying**, not the swap: `BTC-USDT-SWAP` → `BTC-USDT` (strip `-SWAP`).
+- **Open interest:** `GET https://www.okx.com/api/v5/public/open-interest?instType=SWAP` → `[{ instId, oiUsd }]` (`oiUsd` is already USD).
+
+Per 60s tick = 3 funding calls + 3 batch reads = 6 GETs (well within the 20 req/2s limit).
 
 ### Normalization
 
 ```ts
-// OKX 'fundingRate' is per-8h fractional (most pairs; some are 4h — check 'fundingTime' deltas)
-const apr = Number(item.fundingRate) * 3 * 365 * 100
+// OKX 'fundingRate' is per-8h fractional for most pairs; SOME are 4h.
+// Detect the interval from the fundingTime → nextFundingTime delta (×6 not ×3 for 4h).
+const apr = Number(item.fundingRate) * (8760 / intervalHours) * 100
 ```
 
 ### Gotchas
@@ -132,6 +145,8 @@ const apr = Number(item.fundingRate) * 3 * 365 * 100
 ### Docs
 
 - https://www.okx.com/docs-v5/en/#public-data-rest-api-get-funding-rate
+- Mark price: https://www.okx.com/docs-v5/en/#public-data-rest-api-get-mark-price
+- Index tickers: https://www.okx.com/docs-v5/en/#market-data-rest-api-get-index-tickers
 
 ---
 

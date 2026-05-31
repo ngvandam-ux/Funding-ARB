@@ -1,7 +1,8 @@
-// Pure arb math (SPEC §5). No I/O, no Supabase, no fetch.
-// Fees: api-notes §6. Slippage: api-notes §7. Throws on bad input.
+// Deno mirror of src/lib/math.ts. src/lib/math.ts is the Vitest-tested SOURCE OF
+// TRUTH; this copy is for the Edge Function runtime (no node module graph). Keep
+// behavior byte-for-byte identical. Pure arb math (SPEC §5); throws on bad input.
 
-import type { VenueId, Tier } from '../types/domain'
+import type { VenueId, Tier } from './domain.ts'
 
 // api-notes §6 — base (zero-volume-tier) taker fees in bps, per venue.
 export const VENUE_TAKER_BPS: Record<VenueId, number> = {
@@ -26,10 +27,7 @@ function assertPositiveFinite(value: number, label: string): void {
   }
 }
 
-/**
- * One-way slippage cost in USD for a single leg of the given notional and tier.
- * cost = notional × (tierBps / 10_000)
- */
+/** One-way slippage cost in USD for a single leg of the given notional and tier. */
 export function applySlippage(notionalUsd: number, tier: Tier): number {
   assertPositiveFinite(notionalUsd, 'notionalUsd')
   const bps = SLIPPAGE_BPS_BY_TIER[tier]
@@ -51,11 +49,6 @@ function takerFeeUsd(notionalUsd: number, venueId: VenueId): number {
 /**
  * Round-trip (open + close) drag for one leg, expressed in APR percentage points.
  * SPEC §5: (round_trip_cost / position_notional) × cycles_per_year × 100.
- *
- * Returned as a {feeDragPct, slipDragPct} breakdown so callers (the detector) can
- * persist `est_fees_apr_drag` and `est_slippage_apr_drag` separately. Note the
- * notional cancels algebraically — the drag in APR % is notional-independent — but
- * we still require a positive notional so a bad call fails loud (hard rule #7).
  */
 export function computeLegDrag(
   notionalUsd: number,
@@ -74,17 +67,14 @@ export function computeLegDrag(
 }
 
 export interface ComputeNetAprArgs {
-  grossApr: number // already-normalized APR % (fundingRate1hApr)
+  grossApr: number
   positionNotionalUsd: number
   venueId: VenueId
   tier: Tier
   cyclesPerYear: number
 }
 
-/**
- * SPEC §5.1 — single-venue funding harvest (delta-neutral).
- * net = gross − fee drag − slippage drag, drags scaled by cyclesPerYear.
- */
+/** SPEC §5.1 — single-venue funding harvest (delta-neutral). */
 export function computeNetApr(args: ComputeNetAprArgs): number {
   const { grossApr, positionNotionalUsd, venueId, tier, cyclesPerYear } = args
   assertPositiveFinite(positionNotionalUsd, 'positionNotionalUsd')
@@ -103,7 +93,7 @@ export function computeNetApr(args: ComputeNetAprArgs): number {
 
 export interface BasisArbLeg {
   venueId: VenueId
-  aprPct: number // already-normalized APR % (fundingRate1hApr)
+  aprPct: number
   tier: Tier
 }
 
@@ -121,14 +111,8 @@ export interface BasisArbResult {
   shortVenue: VenueId
 }
 
-/**
- * SPEC §5.2 — cross-venue basis arbitrage.
- * gross = abs(a)+abs(b) when signs are opposite; abs(a−b) when signs are same.
- * net = gross − both legs' round-trip fee drag − both legs' round-trip slippage drag.
- */
-export function computeBasisArbNetApr(
-  args: ComputeBasisArbArgs,
-): BasisArbResult {
+/** SPEC §5.2 — cross-venue basis arbitrage. */
+export function computeBasisArbNetApr(args: ComputeBasisArbArgs): BasisArbResult {
   const { legA, legB, positionNotionalUsd, cyclesPerYear } = args
   assertPositiveFinite(positionNotionalUsd, 'positionNotionalUsd')
   assertPositiveFinite(cyclesPerYear, 'cyclesPerYear')
@@ -139,31 +123,17 @@ export function computeBasisArbNetApr(
   const a = legA.aprPct
   const b = legB.aprPct
   const oppositeSigns = a * b < 0
-  const grossApr = oppositeSigns
-    ? Math.abs(a) + Math.abs(b)
-    : Math.abs(a - b)
+  const grossApr = oppositeSigns ? Math.abs(a) + Math.abs(b) : Math.abs(a - b)
 
-  const dragA = computeLegDrag(
-    positionNotionalUsd,
-    legA.venueId,
-    legA.tier,
-    cyclesPerYear,
-  )
-  const dragB = computeLegDrag(
-    positionNotionalUsd,
-    legB.venueId,
-    legB.tier,
-    cyclesPerYear,
-  )
+  const dragA = computeLegDrag(positionNotionalUsd, legA.venueId, legA.tier, cyclesPerYear)
+  const dragB = computeLegDrag(positionNotionalUsd, legB.venueId, legB.tier, cyclesPerYear)
   const netApr =
     grossApr -
     (dragA.feeDragPct + dragB.feeDragPct) -
     (dragA.slipDragPct + dragB.slipDragPct)
 
   // SPEC §5.2 (corrected rule): long the negative-funding venue, short the
-  // positive-funding venue — you receive funding on both legs. When both legs
-  // share a sign, the same logic generalizes to: short the higher-APR venue
-  // (receive the most / pay the least) and long the lower-APR venue.
+  // positive-funding venue. Same-sign generalizes to: long the lower APR.
   const longLeg = a <= b ? legA : legB
   const shortLeg = a <= b ? legB : legA
 

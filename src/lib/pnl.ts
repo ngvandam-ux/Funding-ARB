@@ -1,0 +1,96 @@
+// Pure paper-trade P&L math (SPEC §6 + Session 3 design). No I/O, no clock —
+// marks / dt / now are all injected so this is deterministic and unit-tested.
+// Reuses the fee + slippage tables from math.ts.
+
+import type { VenueId, Tier } from '../types/domain'
+import { VENUE_TAKER_BPS, SLIPPAGE_BPS_BY_TIER } from './math'
+
+export const PAPER_LEVERAGE = 3
+export const MAINTENANCE_MARGIN_FRACTION = 0.005
+export const PAPER_POSITION_USD = 1000
+export const AT_RISK_BUFFER_FRACTION = 0.2
+export const LIQUIDATION_BUFFER_FRACTION = 0.05
+
+// Adverse-move fraction a leg can absorb before liquidation (isolated margin).
+export const INITIAL_BUFFER_FRACTION =
+  1 / PAPER_LEVERAGE - MAINTENANCE_MARGIN_FRACTION
+
+const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000
+const BPS = 10_000
+
+export type Side = 'long' | 'short'
+
+function assertPositiveFinite(v: number, label: string): void {
+  if (!Number.isFinite(v) || v <= 0) {
+    throw new Error(`${label} must be a positive finite number, got ${v}`)
+  }
+}
+
+function legFeeUsd(sizeUsd: number, venueId: VenueId): number {
+  const bps = VENUE_TAKER_BPS[venueId]
+  if (bps === undefined) throw new Error(`unknown venueId: ${String(venueId)}`)
+  return sizeUsd * (bps / BPS)
+}
+
+function legSlippage(sizeUsd: number, tier: Tier): { bps: number; usd: number } {
+  const bps = SLIPPAGE_BPS_BY_TIER[tier]
+  if (bps === undefined) throw new Error(`unknown tier: ${String(tier)}`)
+  return { bps, usd: sizeUsd * (bps / BPS) }
+}
+
+function liqPriceFor(side: Side, entryPrice: number): number {
+  return side === 'short'
+    ? entryPrice * (1 + INITIAL_BUFFER_FRACTION)
+    : entryPrice * (1 - INITIAL_BUFFER_FRACTION)
+}
+
+export interface OpenLegInput {
+  venueId: VenueId
+  tier: Tier
+  side: Side
+  mark: number
+}
+export interface OpenFill {
+  side: Side
+  entryPrice: number
+  liqPrice: number
+  feeUsd: number
+  slippageBps: number
+  slippageUsd: number
+}
+export interface OpenResult {
+  legA: OpenFill
+  legB: OpenFill | null
+  feesUsd: number
+  slippageUsd: number
+}
+
+export function computeOpenFills(args: {
+  legA: OpenLegInput
+  legB: OpenLegInput | null
+  sizeUsd: number
+}): OpenResult {
+  const { legA, legB, sizeUsd } = args
+  assertPositiveFinite(sizeUsd, 'sizeUsd')
+  const build = (leg: OpenLegInput): OpenFill => {
+    assertPositiveFinite(leg.mark, 'mark')
+    const feeUsd = legFeeUsd(sizeUsd, leg.venueId)
+    const slip = legSlippage(sizeUsd, leg.tier)
+    return {
+      side: leg.side,
+      entryPrice: leg.mark,
+      liqPrice: liqPriceFor(leg.side, leg.mark),
+      feeUsd,
+      slippageBps: slip.bps,
+      slippageUsd: slip.usd,
+    }
+  }
+  const a = build(legA)
+  const b = legB ? build(legB) : null
+  return {
+    legA: a,
+    legB: b,
+    feesUsd: a.feeUsd + (b ? b.feeUsd : 0),
+    slippageUsd: a.slippageUsd + (b ? b.slippageUsd : 0),
+  }
+}

@@ -57,3 +57,54 @@ describe('computeOpenFills', () => {
     ).toThrow()
   })
 })
+
+import { computeUnrealizedPnl } from './pnl'
+
+describe('computeUnrealizedPnl', () => {
+  it('single-venue (legB null) is perfectly hedged by spot → 0', () => {
+    const pnl = computeUnrealizedPnl({
+      legA: { side: 'short', entryPrice: 100 },
+      legB: null,
+      markA: 130,
+      markB: null,
+      sizeUsd: 1000,
+    })
+    expect(pnl).toBe(0)
+  })
+
+  it('cross-venue long+short on a +10% move nets ≈ 0 (delta-neutral)', () => {
+    // long gains +10% * 1000 = +100 ; short loses -10% * 1000 = -100
+    const pnl = computeUnrealizedPnl({
+      legA: { side: 'long', entryPrice: 100 },
+      legB: { side: 'short', entryPrice: 100 },
+      markA: 110,
+      markB: 110,
+      sizeUsd: 1000,
+    })
+    expect(pnl).toBeCloseTo(0, 9)
+  })
+
+  it('cross-venue captures basis drift when the two marks diverge', () => {
+    // long leg +10% = +100 ; short leg only +5% adverse = -50 ; net +50
+    const pnl = computeUnrealizedPnl({
+      legA: { side: 'long', entryPrice: 100 },
+      legB: { side: 'short', entryPrice: 100 },
+      markA: 110,
+      markB: 105,
+      sizeUsd: 1000,
+    })
+    expect(pnl).toBeCloseTo(50, 9)
+  })
+
+  it('throws when a cross-venue position is missing markB', () => {
+    expect(() =>
+      computeUnrealizedPnl({
+        legA: { side: 'long', entryPrice: 100 },
+        legB: { side: 'short', entryPrice: 100 },
+        markA: 110,
+        markB: null,
+        sizeUsd: 1000,
+      }),
+    ).toThrow()
+  })
+})

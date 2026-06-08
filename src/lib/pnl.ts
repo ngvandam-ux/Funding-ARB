@@ -94,3 +94,30 @@ export function computeOpenFills(args: {
     slippageUsd: a.slippageUsd + (b ? b.slippageUsd : 0),
   }
 }
+
+function legPricePnl(side: Side, entryPrice: number, mark: number, sizeUsd: number): number {
+  const move = (mark - entryPrice) / entryPrice
+  return side === 'long' ? move * sizeUsd : -move * sizeUsd
+}
+
+export interface PositionLeg {
+  side: Side
+  entryPrice: number
+}
+
+export function computeUnrealizedPnl(args: {
+  legA: PositionLeg
+  legB: PositionLeg | null
+  markA: number
+  markB: number | null
+  sizeUsd: number
+}): number {
+  const { legA, legB, markA, markB, sizeUsd } = args
+  // Single-venue funding harvest is delta-neutral via the implicit spot leg.
+  if (!legB) return 0
+  if (markB === null) throw new Error('cross-venue position requires markB')
+  return (
+    legPricePnl(legA.side, legA.entryPrice, markA, sizeUsd) +
+    legPricePnl(legB.side, legB.entryPrice, markB, sizeUsd)
+  )
+}

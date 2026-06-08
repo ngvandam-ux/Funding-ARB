@@ -180,3 +180,71 @@ export function assessRisk(args: {
         : 'open'
   return { liquidationDistanceBps: minRem * BPS, status }
 }
+
+export interface CloseLegInput {
+  venueId: VenueId
+  tier: Tier
+  side: Side
+  entryPrice: number
+}
+export interface CloseFill {
+  side: Side
+  exitPrice: number
+  feeUsd: number
+  slippageBps: number
+  slippageUsd: number
+}
+export interface CloseResult {
+  legA: CloseFill
+  legB: CloseFill | null
+  pricePnl: number
+  closeFeesUsd: number
+  closeSlippageUsd: number
+  totalFeesUsd: number
+  totalSlippageUsd: number
+  realizedPnlUsd: number
+}
+
+export function computeClose(args: {
+  legA: CloseLegInput
+  legB: CloseLegInput | null
+  markA: number
+  markB: number | null
+  sizeUsd: number
+  cumulativeFundingUsd: number
+}): CloseResult {
+  const { legA, legB, markA, markB, sizeUsd, cumulativeFundingUsd } = args
+  assertPositiveFinite(sizeUsd, 'sizeUsd')
+  const buildClose = (leg: CloseLegInput, mark: number): CloseFill => {
+    assertPositiveFinite(mark, 'mark')
+    const feeUsd = legFeeUsd(sizeUsd, leg.venueId)
+    const slip = legSlippage(sizeUsd, leg.tier)
+    return { side: leg.side, exitPrice: mark, feeUsd, slippageBps: slip.bps, slippageUsd: slip.usd }
+  }
+  const a = buildClose(legA, markA)
+  const b = legB ? buildClose(legB, markB as number) : null
+  const pricePnl = computeUnrealizedPnl({
+    legA: { side: legA.side, entryPrice: legA.entryPrice },
+    legB: legB ? { side: legB.side, entryPrice: legB.entryPrice } : null,
+    markA,
+    markB,
+    sizeUsd,
+  })
+  const closeFeesUsd = a.feeUsd + (b ? b.feeUsd : 0)
+  const closeSlippageUsd = a.slippageUsd + (b ? b.slippageUsd : 0)
+  // Open incurred the same per-leg fee + slippage, so round-trip = 2× close.
+  const totalFeesUsd = 2 * closeFeesUsd
+  const totalSlippageUsd = 2 * closeSlippageUsd
+  const realizedPnlUsd =
+    pricePnl + cumulativeFundingUsd - totalFeesUsd - totalSlippageUsd
+  return {
+    legA: a,
+    legB: b,
+    pricePnl,
+    closeFeesUsd,
+    closeSlippageUsd,
+    totalFeesUsd,
+    totalSlippageUsd,
+    realizedPnlUsd,
+  }
+}

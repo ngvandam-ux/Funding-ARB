@@ -196,3 +196,44 @@ describe('assessRisk', () => {
     expect(r.status).toBe('liquidated_paper')
   })
 })
+
+import { computeClose } from './pnl'
+
+describe('computeClose', () => {
+  it('realized = price P&L + funding − round-trip fees − round-trip slippage', () => {
+    // cross-venue, marks unchanged (pricePnl 0), $1000/leg, HL+Binance major.
+    // per-leg close fee: HL 0.45 + Binance 0.40 = 0.85 ; round trip (open+close) = 1.70
+    // per-leg close slip: 0.50 each = 1.00 ; round trip = 2.00
+    // cumulative funding so far = +12.00
+    // realized = 0 + 12 − 1.70 − 2.00 = 8.30
+    const r = computeClose({
+      legA: { venueId: 'hyperliquid', tier: 'major', side: 'long', entryPrice: 100 },
+      legB: { venueId: 'binance_futures', tier: 'major', side: 'short', entryPrice: 100 },
+      markA: 100,
+      markB: 100,
+      sizeUsd: 1000,
+      cumulativeFundingUsd: 12,
+    })
+    expect(r.pricePnl).toBeCloseTo(0, 9)
+    expect(r.closeFeesUsd).toBeCloseTo(0.85, 9)
+    expect(r.totalFeesUsd).toBeCloseTo(1.7, 9)
+    expect(r.totalSlippageUsd).toBeCloseTo(2.0, 9)
+    expect(r.realizedPnlUsd).toBeCloseTo(8.3, 9)
+    expect(r.legA.exitPrice).toBe(100)
+  })
+
+  it('single-venue: pricePnl 0, one leg of costs', () => {
+    // HL short, mid tier. close fee 0.45, round trip 0.90 ; close slip 1.50, round trip 3.00
+    // funding +5 → realized = 0 + 5 − 0.90 − 3.00 = 1.10
+    const r = computeClose({
+      legA: { venueId: 'hyperliquid', tier: 'mid', side: 'short', entryPrice: 50 },
+      legB: null,
+      markA: 50,
+      markB: null,
+      sizeUsd: 1000,
+      cumulativeFundingUsd: 5,
+    })
+    expect(r.legB).toBeNull()
+    expect(r.realizedPnlUsd).toBeCloseTo(1.1, 9)
+  })
+})

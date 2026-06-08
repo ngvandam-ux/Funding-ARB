@@ -157,3 +157,42 @@ describe('accrueFunding', () => {
     expect(() => accrueFunding({ legA: { side: 'short', fundingRate1hApr: 10 }, legB: null, sizeUsd: 1000, dtMs: -1 })).toThrow()
   })
 })
+
+import { assessRisk, INITIAL_BUFFER_FRACTION as D0 } from './pnl'
+
+describe('assessRisk', () => {
+  it('fresh position (mark == entry) is open with full buffer', () => {
+    const r = assessRisk({ legA: { side: 'short', entryPrice: 100 }, legB: null, markA: 100, markB: null })
+    expect(r.status).toBe('open')
+    expect(r.liquidationDistanceBps).toBeCloseTo(D0 * 10_000, 4)
+  })
+
+  it('short leg: price rising consumes buffer; >80% consumed → at_risk', () => {
+    // d0 ≈ 0.3283. at_risk when remaining/d0 < 0.20 → consumed > 0.8*d0 ≈ 0.2627.
+    // move +0.27 (27%) adverse → remaining ≈ 0.0583, ratio ≈ 0.178 < 0.20
+    const r = assessRisk({ legA: { side: 'short', entryPrice: 100 }, legB: null, markA: 127, markB: null })
+    expect(r.status).toBe('at_risk')
+  })
+
+  it('>95% consumed → liquidated_paper', () => {
+    // move +0.32 adverse → remaining ≈ 0.0083, ratio ≈ 0.025 < 0.05
+    const r = assessRisk({ legA: { side: 'short', entryPrice: 100 }, legB: null, markA: 132, markB: null })
+    expect(r.status).toBe('liquidated_paper')
+  })
+
+  it('long leg: price falling is the adverse direction', () => {
+    const r = assessRisk({ legA: { side: 'long', entryPrice: 100 }, legB: null, markA: 68, markB: null })
+    expect(r.status).toBe('liquidated_paper')
+  })
+
+  it('cross-venue: the binding (losing) leg drives the state', () => {
+    // legA long unharmed (price up), legB short deep in adverse → liquidated
+    const r = assessRisk({
+      legA: { side: 'long', entryPrice: 100 },
+      legB: { side: 'short', entryPrice: 100 },
+      markA: 132,
+      markB: 132,
+    })
+    expect(r.status).toBe('liquidated_paper')
+  })
+})

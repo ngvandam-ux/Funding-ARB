@@ -140,3 +140,43 @@ export function accrueFunding(args: {
   }
   return legFunding(legA) + (legB ? legFunding(legB) : 0)
 }
+
+function adverseFraction(side: Side, entryPrice: number, mark: number): number {
+  const a = side === 'short' ? (mark - entryPrice) / entryPrice : (entryPrice - mark) / entryPrice
+  return Math.max(0, a)
+}
+
+export interface RiskLeg {
+  side: Side
+  entryPrice: number
+}
+export interface RiskAssessment {
+  liquidationDistanceBps: number
+  status: 'open' | 'at_risk' | 'liquidated_paper'
+}
+
+export function assessRisk(args: {
+  legA: RiskLeg
+  legB: RiskLeg | null
+  markA: number
+  markB: number | null
+}): RiskAssessment {
+  const { legA, legB, markA, markB } = args
+  const d0 = INITIAL_BUFFER_FRACTION
+  const remaining = (leg: RiskLeg, mark: number): number =>
+    d0 - adverseFraction(leg.side, leg.entryPrice, mark)
+  const rems = [remaining(legA, markA)]
+  if (legB) {
+    if (markB === null) throw new Error('cross-venue position requires markB')
+    rems.push(remaining(legB, markB))
+  }
+  const minRem = Math.min(...rems)
+  const ratio = minRem / d0
+  const status =
+    ratio < LIQUIDATION_BUFFER_FRACTION
+      ? 'liquidated_paper'
+      : ratio < AT_RISK_BUFFER_FRACTION
+        ? 'at_risk'
+        : 'open'
+  return { liquidationDistanceBps: minRem * BPS, status }
+}

@@ -24,10 +24,10 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
       react-window:
-        specifier: ^1.8.10
+        specifier: ^1.8.11
         version: 1.8.11(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       recharts:
-        specifier: ^2.13.0
+        specifier: ^2.15.4
         version: 2.15.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       zod:
         specifier: ^3.23.8
@@ -40,7 +40,7 @@ importers:
         specifier: ^4.0.0
         version: 4.3.0(vite@6.4.2(jiti@2.7.0)(lightningcss@1.32.0))
       '@types/d3-scale-chromatic':
-        specifier: ^3.0.3
+        specifier: ^3.1.0
         version: 3.1.0
       '@types/react':
         specifier: ^18.3.12

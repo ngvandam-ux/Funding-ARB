@@ -4,10 +4,11 @@
 -- Order: (1) migration, (2) prerequisites, (3) one 60s cron per function.
 -- Deploy the functions FIRST (`supabase functions deploy <name>`), then run this.
 --
--- Replace <project-ref> with the real project ref (efsaspkngkzgmppajnne) and store
--- the service-role key in Vault ONCE (do NOT paste the literal key into a cron body):
+-- Project ref is hardcoded to the FRANKFURT/EU project (lfgmqpeaicqygzfgystu) below —
+-- the app migrated US -> Singapore -> Frankfurt on 2026-05-31 (Singapore also blocked
+-- Binance; Frankfurt serves Binance + Bybit). Older refs are decommissioned. Store the
+-- service-role key in Vault ONCE (do NOT paste the literal key into a cron body):
 --   select vault.create_secret('<service-role-key>', 'service_role_key');
--- (Already done in Session 1 if the Hyperliquid cron is running with Vault.)
 
 -- =====================================================================
 -- 1. Migration — opportunities dedup key + partial unique index
@@ -35,7 +36,7 @@ select cron.schedule(
   'ingest-binance-60s', '* * * * *',
   $$
   select net.http_post(
-    url     := 'https://<project-ref>.supabase.co/functions/v1/ingest-binance',
+    url     := 'https://lfgmqpeaicqygzfgystu.supabase.co/functions/v1/ingest-binance',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets
@@ -48,7 +49,7 @@ select cron.schedule(
   'ingest-bybit-60s', '* * * * *',
   $$
   select net.http_post(
-    url     := 'https://<project-ref>.supabase.co/functions/v1/ingest-bybit',
+    url     := 'https://lfgmqpeaicqygzfgystu.supabase.co/functions/v1/ingest-bybit',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets
@@ -61,7 +62,7 @@ select cron.schedule(
   'ingest-okx-60s', '* * * * *',
   $$
   select net.http_post(
-    url     := 'https://<project-ref>.supabase.co/functions/v1/ingest-okx',
+    url     := 'https://lfgmqpeaicqygzfgystu.supabase.co/functions/v1/ingest-okx',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets
@@ -74,7 +75,7 @@ select cron.schedule(
   'detect-opportunities-60s', '* * * * *',
   $$
   select net.http_post(
-    url     := 'https://<project-ref>.supabase.co/functions/v1/detect-opportunities',
+    url     := 'https://lfgmqpeaicqygzfgystu.supabase.co/functions/v1/detect-opportunities',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets

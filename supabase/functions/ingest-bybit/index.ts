@@ -61,7 +61,17 @@ Deno.serve(async () => {
       return Response.json({ inserted: 0, note: 'no active instruments' })
     }
 
-    const res = await fetch(TICKERS)
+    // Bybit fronts the API with CloudFront, which 403s programmatic requests that
+    // lack a browser-like User-Agent. Send one (+ Accept) so the edge fetch isn't
+    // mistaken for a bot. (Verified fix for the 403 seen from the Frankfurt egress.)
+    const res = await fetch(TICKERS, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'application/json',
+      },
+    })
     if (!res.ok) {
       console.error(JSON.stringify({ venue: VENUE, endpoint: TICKERS, status: res.status }))
       throw new Error(`bybit HTTP ${res.status}`)

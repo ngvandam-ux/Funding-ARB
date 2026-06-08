@@ -108,3 +108,52 @@ describe('computeUnrealizedPnl', () => {
     ).toThrow()
   })
 })
+
+import { accrueFunding } from './pnl'
+
+describe('accrueFunding', () => {
+  const YEAR_MS = 365 * 24 * 60 * 60 * 1000
+
+  it('short leg receives positive funding (longs pay shorts)', () => {
+    // +36.5% APR, short, $1000, over exactly 1 day → 36.5/100/365 * 1000 = $1.00
+    const f = accrueFunding({
+      legA: { side: 'short', fundingRate1hApr: 36.5 },
+      legB: null,
+      sizeUsd: 1000,
+      dtMs: YEAR_MS / 365,
+    })
+    expect(f).toBeCloseTo(1.0, 9)
+  })
+
+  it('long leg on positive funding pays (negative accrual)', () => {
+    const f = accrueFunding({
+      legA: { side: 'long', fundingRate1hApr: 36.5 },
+      legB: null,
+      sizeUsd: 1000,
+      dtMs: YEAR_MS / 365,
+    })
+    expect(f).toBeCloseTo(-1.0, 9)
+  })
+
+  it('cross-venue: both legs receive funding (long neg-funding, short pos-funding)', () => {
+    // legA long on −20% APR → receives +20% ; legB short on +40% APR → receives +40%
+    // over 1 year, $1000 → +200 + 400 = +600
+    const f = accrueFunding({
+      legA: { side: 'long', fundingRate1hApr: -20 },
+      legB: { side: 'short', fundingRate1hApr: 40 },
+      sizeUsd: 1000,
+      dtMs: YEAR_MS,
+    })
+    expect(f).toBeCloseTo(600, 6)
+  })
+
+  it('scales linearly with dt', () => {
+    const oneHour = accrueFunding({ legA: { side: 'short', fundingRate1hApr: 10 }, legB: null, sizeUsd: 1000, dtMs: 3_600_000 })
+    const twoHour = accrueFunding({ legA: { side: 'short', fundingRate1hApr: 10 }, legB: null, sizeUsd: 1000, dtMs: 7_200_000 })
+    expect(twoHour).toBeCloseTo(oneHour * 2, 9)
+  })
+
+  it('throws on negative dt', () => {
+    expect(() => accrueFunding({ legA: { side: 'short', fundingRate1hApr: 10 }, legB: null, sizeUsd: 1000, dtMs: -1 })).toThrow()
+  })
+})

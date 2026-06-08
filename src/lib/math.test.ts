@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   computeNetApr,
   computeBasisArbNetApr,
+  computeLegDrag,
   applySlippage,
   VENUE_TAKER_BPS,
   SLIPPAGE_BPS_BY_TIER,
@@ -115,6 +116,47 @@ describe('computeNetApr (single-venue funding harvest)', () => {
         cyclesPerYear: 0,
       }),
     ).toThrow()
+  })
+})
+
+describe('computeLegDrag (per-leg fee + slippage drag breakdown)', () => {
+  it('returns round-trip fee and slippage drag as separate APR percentage points', () => {
+    // hyperliquid (4.5 bps taker), major (5 bps), 1 cycle/yr.
+    // feeDrag% = 2 * 4.5 bps * 1 cycle = 9 bps = 0.09% ; slipDrag% = 2 * 5 bps = 10 bps = 0.10%
+    // Notionals cancel in the APR formula, so the breakdown is notional-independent.
+    const drag = computeLegDrag(100_000, 'hyperliquid', 'major', 1)
+    expect(drag.feeDragPct).toBeCloseTo(0.09, 6)
+    expect(drag.slipDragPct).toBeCloseTo(0.1, 6)
+  })
+
+  it('is independent of notional size', () => {
+    const small = computeLegDrag(1_000, 'binance_futures', 'mid', 1)
+    const large = computeLegDrag(5_000_000, 'binance_futures', 'mid', 1)
+    expect(small.feeDragPct).toBeCloseTo(large.feeDragPct, 9)
+    expect(small.slipDragPct).toBeCloseTo(large.slipDragPct, 9)
+  })
+
+  it('scales linearly with cyclesPerYear', () => {
+    const one = computeLegDrag(100_000, 'okx', 'alt', 1)
+    const four = computeLegDrag(100_000, 'okx', 'alt', 4)
+    expect(four.feeDragPct).toBeCloseTo(one.feeDragPct * 4, 9)
+    expect(four.slipDragPct).toBeCloseTo(one.slipDragPct * 4, 9)
+  })
+
+  it('agrees with computeNetApr (gross − feeDrag − slipDrag)', () => {
+    const drag = computeLegDrag(100_000, 'hyperliquid', 'major', 1)
+    const net = computeNetApr({
+      grossApr: 50,
+      positionNotionalUsd: 100_000,
+      venueId: 'hyperliquid',
+      tier: 'major',
+      cyclesPerYear: 1,
+    })
+    expect(net).toBeCloseTo(50 - drag.feeDragPct - drag.slipDragPct, 6)
+  })
+
+  it('throws on a non-positive notional', () => {
+    expect(() => computeLegDrag(0, 'hyperliquid', 'major', 1)).toThrow()
   })
 })
 

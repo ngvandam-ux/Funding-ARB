@@ -412,10 +412,11 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
 
-# Browser-invoked paper CTAs: the anon client must reach these (CLAUDE.md hard rule
-# #2 keeps the service key server-side; the fn uses its own env key for writes).
+# Paper CTAs are LOCKED: verify_jwt=true so the public anon key cannot invoke them
+# (no dataset pollution). The dashboard is read-only; the engine opens via auto-open
+# and closes via snapshot-pnl, both of which call the logic internally (not over HTTP).
 [functions.open-paper-position]
-verify_jwt = false
+verify_jwt = true
 
 [functions.close-paper-position]
-verify_jwt = false
+verify_jwt = true

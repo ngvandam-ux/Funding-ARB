@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { coinalyzeSymbol, fundingAprFromNative, nextFunding8hUtc } from './coinalyze'
+import { coinalyzeSymbol, fundingAprFromNative, fundingAprFromCoinalyze, nextFunding8hUtc } from './coinalyze'
 
 describe('coinalyzeSymbol', () => {
   it('maps Binance futures to the _PERP.A format', () => {
@@ -17,11 +17,21 @@ describe('coinalyzeSymbol', () => {
 })
 
 describe('fundingAprFromNative', () => {
-  it('annualizes an 8h native rate to the project APR convention (×3×365×100)', () => {
-    // matches normalizeBinance/normalizeBybit so cross-venue compare is apples-to-apples
-    expect(fundingAprFromNative(0.0001)).toBeCloseTo(0.0001 * 3 * 365 * 100, 9) // 10.95
-    expect(fundingAprFromNative(-0.009635)).toBeCloseTo(-0.009635 * 3 * 365 * 100, 6)
+  it('annualizes an 8h decimal-FRACTION rate (×3×365×100) — matches normalizeBinance/Bybit', () => {
+    expect(fundingAprFromNative(0.0001)).toBeCloseTo(0.0001 * 3 * 365 * 100, 9) // 10.95%
     expect(fundingAprFromNative(0)).toBe(0)
+  })
+})
+
+describe('fundingAprFromCoinalyze', () => {
+  it('treats the Coinalyze value as PERCENT-per-8h (÷100 before annualize)', () => {
+    // real probe values → sane APRs consistent with live OKX/HL (NOT ×100 too big)
+    expect(fundingAprFromCoinalyze(-0.009635)).toBeCloseTo(-10.55, 1) // Bybit ETH
+    expect(fundingAprFromCoinalyze(0.001644)).toBeCloseTo(1.8, 2) // Bybit BTC
+    expect(fundingAprFromCoinalyze(0)).toBe(0)
+  })
+  it('is 100× smaller than mistakenly treating the value as a fraction', () => {
+    expect(fundingAprFromCoinalyze(0.0096) * 100).toBeCloseTo(fundingAprFromNative(0.0096), 6)
   })
 })
 

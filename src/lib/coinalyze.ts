@@ -19,9 +19,17 @@ export function coinalyzeSymbol(venueId: VenueId, venueSymbol: string): string {
   }
 }
 
-/** Binance + Bybit fund every 8h; annualize to % the same way normalize.ts does. */
-export function fundingAprFromNative(nativeRate: number): number {
-  return nativeRate * EIGHT_H_PER_YEAR * 100
+/** Binance + Bybit fund every 8h; annualize a decimal-FRACTION rate to % the same
+ *  way normalize.ts does (× intervals/year × 100). */
+export function fundingAprFromNative(nativeFraction: number): number {
+  return nativeFraction * EIGHT_H_PER_YEAR * 100
+}
+
+/** Coinalyze reports the funding rate in PERCENT per 8h (e.g. 0.0096 = 0.0096%), NOT a
+ *  decimal fraction like the raw venues. Convert to a fraction (÷100) before annualizing.
+ *  (Skipping this makes the APR 100× too big — it caused a live contamination incident.) */
+export function fundingAprFromCoinalyze(coinalyzeValue: number): number {
+  return fundingAprFromNative(coinalyzeValue / 100)
 }
 
 const EIGHT_H_MS = 8 * 60 * 60 * 1000

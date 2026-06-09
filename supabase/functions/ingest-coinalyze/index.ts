@@ -11,7 +11,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
 import type { VenueId } from '../_shared/domain.ts'
-import { coinalyzeSymbol, fundingAprFromNative, nextFunding8hUtc } from '../_shared/coinalyze.ts'
+import { coinalyzeSymbol, fundingAprFromCoinalyze, nextFunding8hUtc } from '../_shared/coinalyze.ts'
 
 const VENUE = 'ingest-coinalyze'
 const BASE = 'https://api.coinalyze.net/v1'
@@ -99,15 +99,19 @@ Deno.serve(async () => {
     const rows: Record<string, unknown>[] = []
     let skipped = 0
     for (const [instrumentId, sym] of symbolByInstrument) {
-      const native = fundingBySym.get(sym)
-      if (native === undefined) {
+      const value = fundingBySym.get(sym)
+      if (value === undefined) {
         skipped++
         continue
       }
+      // Coinalyze value is PERCENT-per-8h; store the fraction + annualize via the tested
+      // helper (which does the ÷100). Without it the APR is 100× too big (caused a
+      // live contamination incident — see lib/coinalyze.ts).
+      const native = value / 100
       rows.push({
         instrument_id: instrumentId,
         funding_rate_native: native,
-        funding_rate_1h_apr: fundingAprFromNative(native),
+        funding_rate_1h_apr: fundingAprFromCoinalyze(value),
         next_funding_ts: nextTs,
         mark_price: markBySym.get(sym) ?? null,
         index_price: null,

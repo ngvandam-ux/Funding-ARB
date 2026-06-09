@@ -38,6 +38,12 @@ const PosRow = z.object({
 
 Deno.serve(async (req) => {
   try {
+    // Service-role-only: the public anon key is a valid JWT (so verify_jwt alone
+    // wouldn't stop it). Require the bearer to equal the server-side service key.
+    const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
+    if (token !== getEnv('SUPABASE_SERVICE_ROLE_KEY')) {
+      return Response.json({ error: 'forbidden: service role required' }, { status: 403 })
+    }
     const supabase = createClient(getEnv('SUPABASE_URL'), getEnv('SUPABASE_SERVICE_ROLE_KEY'), {
       auth: { persistSession: false },
     })

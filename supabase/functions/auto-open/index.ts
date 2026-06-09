@@ -9,10 +9,9 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
 import { PAPER_POSITION_USD } from '../_shared/pnl.ts'
 import { openPaperPosition, type OpportunityRow } from '../_shared/paper.ts'
+import { shouldAutoOpen } from '../_shared/paper-open.ts'
 
 const FN = 'auto-open'
-const SINGLE_OPEN_APR = 15
-const CROSS_OPEN_APR = 20
 
 function getEnv(name: string): string {
   const v = Deno.env.get(name)
@@ -59,8 +58,9 @@ Deno.serve(async () => {
     let opened = 0
     let skipped = 0
     for (const opp of opps) {
-      const bar = opp.kind === 'cross_venue_basis_arb' ? CROSS_OPEN_APR : SINGLE_OPEN_APR
-      if (opp.net_apr < bar || openKeys.has(opp.dedup_key)) {
+      // Gate: clears the paper-open bar AND below the sanity ceiling (circuit breaker
+      // against bad/misnormalized data — see _shared/paper-open.ts), and not already open.
+      if (!shouldAutoOpen(opp.kind, opp.net_apr) || openKeys.has(opp.dedup_key)) {
         skipped++
         continue
       }

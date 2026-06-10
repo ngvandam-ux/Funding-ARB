@@ -86,29 +86,46 @@ Deno.serve(async () => {
     const bySymbol = new Map(env.result.list.map((it) => [it.symbol, it]))
 
     const ts = new Date()
-    const rows = tracked.map((inst) => {
-      const item = bySymbol.get(inst.venue_symbol)
-      if (item === undefined) {
-        throw new Error(`tracked symbol ${inst.venue_symbol} not in bybit tickers`)
+    const rows = []
+    for (const inst of tracked) {
+      // Per-symbol resilience: a delisted/renamed symbol or one bad normalize
+      // skips that instrument (logged loud) instead of killing the whole batch.
+      try {
+        const item = bySymbol.get(inst.venue_symbol)
+        if (item === undefined) {
+          throw new Error(`tracked symbol ${inst.venue_symbol} not in bybit tickers`)
+        }
+        const n = normalizeBybit({ item, baseSymbol: inst.base_symbol, ts })
+        rows.push({
+          instrument_id: inst.id,
+          ts: n.ts.toISOString(),
+          funding_rate_native: n.fundingRateNative,
+          funding_rate_1h_apr: n.fundingRate1hApr,
+          next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
+          mark_price: n.markPrice,
+          index_price: n.indexPrice,
+          open_interest_usd: n.openInterestUsd,
+          raw: { item },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(
+          JSON.stringify({ venue: VENUE, instrument: inst.venue_symbol, skipError: message }),
+        )
+        continue
       }
-      const n = normalizeBybit({ item, baseSymbol: inst.base_symbol, ts })
-      return {
-        instrument_id: inst.id,
-        ts: n.ts.toISOString(),
-        funding_rate_native: n.fundingRateNative,
-        funding_rate_1h_apr: n.fundingRate1hApr,
-        next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
-        mark_price: n.markPrice,
-        index_price: n.indexPrice,
-        open_interest_usd: n.openInterestUsd,
-        raw: { item },
-      }
-    })
+    }
+
+    // Every tracked symbol failed → the venue feed is genuinely dead. Fail loud
+    // so the cron retries, instead of inserting nothing and looking healthy.
+    if (rows.length === 0 && tracked.length > 0) {
+      throw new Error(`all ${tracked.length} tracked bybit symbols failed to normalize`)
+    }
 
     const { error: insErr } = await supabase.from('funding_snapshots').insert(rows)
     if (insErr) throw new Error(`db insert funding_snapshots failed: ${insErr.message}`)
 
-    return Response.json({ inserted: rows.length })
+    return Response.json({ inserted: rows.length, skipped: tracked.length - rows.length })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(JSON.stringify({ venue: VENUE, endpoint: TICKERS, error: message }))

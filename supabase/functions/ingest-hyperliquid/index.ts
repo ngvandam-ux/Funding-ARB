@@ -78,38 +78,55 @@ Deno.serve(async () => {
     meta.universe.forEach((u, i) => indexByName.set(u.name, i))
 
     const ts = new Date()
-    const rows = tracked.map((inst) => {
-      const i = indexByName.get(inst.venue_symbol)
-      if (i === undefined || ctxs[i] === undefined) {
-        throw new Error(
-          `tracked symbol ${inst.venue_symbol} not found in HL universe`,
+    const rows = []
+    for (const inst of tracked) {
+      // Per-symbol resilience: a delisted/renamed symbol or one bad normalize
+      // skips that instrument (logged loud) instead of killing the whole batch.
+      try {
+        const i = indexByName.get(inst.venue_symbol)
+        if (i === undefined || ctxs[i] === undefined) {
+          throw new Error(
+            `tracked symbol ${inst.venue_symbol} not found in HL universe`,
+          )
+        }
+        const ctx = ctxs[i]
+        const n = normalizeHyperliquid({
+          ctx,
+          venueSymbol: inst.venue_symbol,
+          baseSymbol: inst.base_symbol,
+          ts,
+        })
+        rows.push({
+          instrument_id: inst.id,
+          ts: n.ts.toISOString(),
+          funding_rate_native: n.fundingRateNative,
+          funding_rate_1h_apr: n.fundingRate1hApr,
+          next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
+          mark_price: n.markPrice,
+          index_price: n.indexPrice,
+          open_interest_usd: n.openInterestUsd,
+          raw: { name: inst.venue_symbol, ctx }, // FULL raw asset ctx + its name
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(
+          JSON.stringify({ venue: VENUE, instrument: inst.venue_symbol, skipError: message }),
         )
+        continue
       }
-      const ctx = ctxs[i]
-      const n = normalizeHyperliquid({
-        ctx,
-        venueSymbol: inst.venue_symbol,
-        baseSymbol: inst.base_symbol,
-        ts,
-      })
-      return {
-        instrument_id: inst.id,
-        ts: n.ts.toISOString(),
-        funding_rate_native: n.fundingRateNative,
-        funding_rate_1h_apr: n.fundingRate1hApr,
-        next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
-        mark_price: n.markPrice,
-        index_price: n.indexPrice,
-        open_interest_usd: n.openInterestUsd,
-        raw: { name: inst.venue_symbol, ctx }, // FULL raw asset ctx + its name
-      }
-    })
+    }
+
+    // Every tracked symbol failed → the venue feed is genuinely dead. Fail loud
+    // so the cron retries, instead of inserting nothing and looking healthy.
+    if (rows.length === 0 && tracked.length > 0) {
+      throw new Error(`all ${tracked.length} tracked hyperliquid symbols failed to normalize`)
+    }
 
     // 4. Insert all rows. RLS: service-role client bypasses anon write block.
     const { error: insErr } = await supabase.from('funding_snapshots').insert(rows)
     if (insErr) throw new Error(`db insert funding_snapshots failed: ${insErr.message}`)
 
-    return Response.json({ inserted: rows.length })
+    return Response.json({ inserted: rows.length, skipped: tracked.length - rows.length })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(

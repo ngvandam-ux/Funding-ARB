@@ -22,7 +22,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-bg p-4 text-fg">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <Header positions={positions.data} pnl={pnl.data} />
+        <Header positions={positions.data} pnl={pnl.data} funding={funding.data} />
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <FundingHeatmap rows={funding.data} />
           <AprLeaderboard rows={funding.data} />

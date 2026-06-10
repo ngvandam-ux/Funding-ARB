@@ -24,6 +24,11 @@ export function usePnlSnapshots() {
         liquidationDistanceBps: numOrNull(r.liquidation_distance_bps),
       }),
       key: (d: PnlSnapshot) => d.id,
+      // Newest-first + cap, then `sort` re-orders ascending for the curve.
+      // 2000 rows ≈ a week of 5-min ticks for ~1 position — fine for v1; the v2
+      // fix is a server-side downsampling view.
+      initialOrder: { column: 'ts', ascending: false },
+      initialLimit: 2000,
       sort: (a: PnlSnapshot, b: PnlSnapshot) => a.ts.localeCompare(b.ts),
     }),
     [],

@@ -99,25 +99,40 @@ Deno.serve(async () => {
     const rows: Record<string, unknown>[] = []
     let skipped = 0
     for (const [instrumentId, sym] of symbolByInstrument) {
-      const value = fundingBySym.get(sym)
-      if (value === undefined) {
+      // Per-symbol resilience: a missing/renamed symbol or one bad annualize
+      // skips that instrument (logged loud) instead of killing the whole batch.
+      try {
+        const value = fundingBySym.get(sym)
+        if (value === undefined) {
+          skipped++
+          continue
+        }
+        // Coinalyze value is PERCENT-per-8h; store the fraction + annualize via the tested
+        // helper (which does the ÷100). Without it the APR is 100× too big (caused a
+        // live contamination incident — see lib/coinalyze.ts).
+        const native = value / 100
+        rows.push({
+          instrument_id: instrumentId,
+          funding_rate_native: native,
+          funding_rate_1h_apr: fundingAprFromCoinalyze(value),
+          next_funding_ts: nextTs,
+          mark_price: markBySym.get(sym) ?? null,
+          index_price: null,
+          open_interest_usd: oiBySym.get(sym) ?? null,
+          raw: { source: 'coinalyze', symbol: sym },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(JSON.stringify({ venue: VENUE, instrument: sym, skipError: message }))
         skipped++
         continue
       }
-      // Coinalyze value is PERCENT-per-8h; store the fraction + annualize via the tested
-      // helper (which does the ÷100). Without it the APR is 100× too big (caused a
-      // live contamination incident — see lib/coinalyze.ts).
-      const native = value / 100
-      rows.push({
-        instrument_id: instrumentId,
-        funding_rate_native: native,
-        funding_rate_1h_apr: fundingAprFromCoinalyze(value),
-        next_funding_ts: nextTs,
-        mark_price: markBySym.get(sym) ?? null,
-        index_price: null,
-        open_interest_usd: oiBySym.get(sym) ?? null,
-        raw: { source: 'coinalyze', symbol: sym },
-      })
+    }
+
+    // Every tracked instrument failed/missing → the feed is genuinely dead.
+    // Fail loud so the cron retries, instead of returning 200 with nothing.
+    if (rows.length === 0 && instruments.length > 0) {
+      throw new Error(`all ${instruments.length} tracked coinalyze instruments failed or were missing`)
     }
 
     if (rows.length > 0) {

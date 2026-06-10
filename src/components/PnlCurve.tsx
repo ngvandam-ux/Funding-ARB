@@ -10,6 +10,11 @@ import { EmptyState } from './ui/EmptyState'
 interface Point { ts: number; realized: number; unrealized: number; funding: number; fees: number }
 
 // Sum the latest-known value per position at each snapshot timestamp (step-forward).
+// Per-tick rows carry realized_pnl_usd=0; the engine writes one FINAL row at close
+// with realized set and unrealized zeroed. So: realized = latest realized per
+// closed position, summed (a cumulative step series); a closed position contributes
+// 0 unrealized from its final snapshot onward, even if a stray pre-close row sorts
+// after it. cumulative_fees_usd is ALL costs (fees + slippage + synthetic spot leg).
 function buildSeries(snaps: PnlSnapshot[]): Point[] {
   const byTs = new Map<string, PnlSnapshot[]>()
   for (const s of snaps) {
@@ -18,14 +23,22 @@ function buildSeries(snaps: PnlSnapshot[]): Point[] {
     byTs.set(s.ts, arr)
   }
   const latestPerPos = new Map<number, PnlSnapshot>()
+  // Latest realized value per position, recorded only from close snapshots —
+  // a position is in here iff we've seen it close.
+  const realizedPerPos = new Map<number, number>()
   const points: Point[] = []
   for (const ts of [...byTs.keys()].sort()) {
-    for (const s of byTs.get(ts)!) if (s.positionId !== null) latestPerPos.set(s.positionId, s)
+    for (const s of byTs.get(ts)!) {
+      if (s.positionId === null) continue
+      latestPerPos.set(s.positionId, s)
+      if (s.realizedPnlUsd !== 0) realizedPerPos.set(s.positionId, s.realizedPnlUsd)
+    }
     let realized = 0, unrealized = 0, funding = 0, fees = 0
-    for (const s of latestPerPos.values()) {
-      realized += s.realizedPnlUsd; unrealized += s.unrealizedPnlUsd
+    for (const [posId, s] of latestPerPos) {
+      if (!realizedPerPos.has(posId)) unrealized += s.unrealizedPnlUsd
       funding += s.cumulativeFundingUsd; fees += s.cumulativeFeesUsd
     }
+    for (const r of realizedPerPos.values()) realized += r
     points.push({ ts: new Date(ts).getTime(), realized, unrealized, funding, fees: -fees })
   }
   return points
@@ -50,7 +63,7 @@ export function PnlCurve({ pnl }: { pnl: PnlSnapshot[] }) {
             <Line type="monotone" dataKey="unrealized" name="Unrealized" stroke="#22d3ee" dot={false} />
             <Line type="monotone" dataKey="realized" name="Realized" stroke="#e879f9" dot={false} />
             <Line type="monotone" dataKey="funding" name="Funding" stroke="#34d399" dot={false} />
-            <Line type="monotone" dataKey="fees" name="Fees" stroke="#fb7185" dot={false} />
+            <Line type="monotone" dataKey="fees" name="Costs" stroke="#fb7185" dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

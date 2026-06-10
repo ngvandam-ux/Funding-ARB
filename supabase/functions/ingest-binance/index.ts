@@ -91,34 +91,50 @@ Deno.serve(async () => {
     const ts = new Date()
     const rows = []
     for (const inst of tracked) {
-      const item = bySymbol.get(inst.venue_symbol)
-      if (item === undefined) {
-        throw new Error(`tracked symbol ${inst.venue_symbol} not in binance premiumIndex`)
+      // Per-symbol resilience: a delisted/renamed symbol or one bad normalize
+      // skips that instrument (logged loud) instead of killing the whole batch.
+      try {
+        const item = bySymbol.get(inst.venue_symbol)
+        if (item === undefined) {
+          throw new Error(`tracked symbol ${inst.venue_symbol} not in binance premiumIndex`)
+        }
+        const n = normalizeBinance({
+          item,
+          baseSymbol: inst.base_symbol,
+          openInterestUsd: null, // filled below once we have markPrice
+          ts,
+        })
+        const openInterestUsd = await fetchOpenInterestUsd(inst.venue_symbol, n.markPrice)
+        rows.push({
+          instrument_id: inst.id,
+          ts: n.ts.toISOString(),
+          funding_rate_native: n.fundingRateNative,
+          funding_rate_1h_apr: n.fundingRate1hApr,
+          next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
+          mark_price: n.markPrice,
+          index_price: n.indexPrice,
+          open_interest_usd: openInterestUsd,
+          raw: { item, openInterestUsd },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(
+          JSON.stringify({ venue: VENUE, instrument: inst.venue_symbol, skipError: message }),
+        )
+        continue
       }
-      const n = normalizeBinance({
-        item,
-        baseSymbol: inst.base_symbol,
-        openInterestUsd: null, // filled below once we have markPrice
-        ts,
-      })
-      const openInterestUsd = await fetchOpenInterestUsd(inst.venue_symbol, n.markPrice)
-      rows.push({
-        instrument_id: inst.id,
-        ts: n.ts.toISOString(),
-        funding_rate_native: n.fundingRateNative,
-        funding_rate_1h_apr: n.fundingRate1hApr,
-        next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
-        mark_price: n.markPrice,
-        index_price: n.indexPrice,
-        open_interest_usd: openInterestUsd,
-        raw: { item, openInterestUsd },
-      })
+    }
+
+    // Every tracked symbol failed → the venue feed is genuinely dead. Fail loud
+    // so the cron retries, instead of inserting nothing and looking healthy.
+    if (rows.length === 0 && tracked.length > 0) {
+      throw new Error(`all ${tracked.length} tracked binance symbols failed to normalize`)
     }
 
     const { error: insErr } = await supabase.from('funding_snapshots').insert(rows)
     if (insErr) throw new Error(`db insert funding_snapshots failed: ${insErr.message}`)
 
-    return Response.json({ inserted: rows.length })
+    return Response.json({ inserted: rows.length, skipped: tracked.length - rows.length })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(JSON.stringify({ venue: VENUE, endpoint: PREMIUM_INDEX, error: message }))

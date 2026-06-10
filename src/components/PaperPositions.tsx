@@ -20,11 +20,16 @@ function latestByPosition(snaps: PnlSnapshot[]): Map<number, PnlSnapshot> {
 
 export function PaperPositions({ positions, pnl }: { positions: PaperPosition[]; pnl: PnlSnapshot[] }) {
   const latest = useMemo(() => latestByPosition(pnl), [pnl])
+  // The hook returns ALL positions (Header needs closed ones); this panel is open-only.
+  const open = useMemo(
+    () => positions.filter((p) => p.status === 'open' || p.status === 'at_risk'),
+    [positions],
+  )
 
-  if (!positions.length)
+  if (!open.length)
     return (
       <Panel title="Paper Positions">
-        <EmptyState message="No paper positions yet — engine deploys soon." />
+        <EmptyState message="No open paper positions." />
       </Panel>
     )
 
@@ -42,7 +47,7 @@ export function PaperPositions({ positions, pnl }: { positions: PaperPosition[];
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {open.map((p) => {
               const s = latest.get(p.id)
               const unreal = s?.unrealizedPnlUsd ?? 0
               return (

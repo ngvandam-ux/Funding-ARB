@@ -7,6 +7,7 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
 import { closePaperPosition, type PositionRow } from '../_shared/paper.ts'
+import { isServiceRoleCaller } from '../_shared/auth.ts'
 
 const FN = 'close-paper-position'
 
@@ -34,14 +35,14 @@ const PosRow = z.object({
   leg_b_side: z.enum(['long', 'short']).nullable(),
   leg_b_entry_price: numeric.nullable(),
   cumulative_funding_usd: numeric,
+  cumulative_fees_usd: numeric,
 })
 
 Deno.serve(async (req) => {
   try {
-    // Service-role-only: the public anon key is a valid JWT (so verify_jwt alone
-    // wouldn't stop it). Require the bearer to equal the server-side service key.
-    const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
-    if (token !== getEnv('SUPABASE_SERVICE_ROLE_KEY')) {
+    // Service-role-only (gateway verify_jwt has already checked the signature;
+    // see _shared/auth.ts for why this is a role-claim check, not key equality).
+    if (!isServiceRoleCaller(req)) {
       return Response.json({ error: 'forbidden: service role required' }, { status: 403 })
     }
     const supabase = createClient(getEnv('SUPABASE_URL'), getEnv('SUPABASE_SERVICE_ROLE_KEY'), {
@@ -52,7 +53,7 @@ Deno.serve(async (req) => {
     const { data, error } = await supabase
       .from('paper_positions')
       .select(
-        'id, status, position_size_usd, leg_a_instrument_id, leg_a_side, leg_a_entry_price, leg_b_instrument_id, leg_b_side, leg_b_entry_price, cumulative_funding_usd',
+        'id, status, position_size_usd, leg_a_instrument_id, leg_a_side, leg_a_entry_price, leg_b_instrument_id, leg_b_side, leg_b_entry_price, cumulative_funding_usd, cumulative_fees_usd',
       )
       .eq('id', body.positionId)
       .single()
@@ -72,6 +73,7 @@ Deno.serve(async (req) => {
       leg_b_side: row.leg_b_side,
       leg_b_entry_price: row.leg_b_entry_price,
       cumulative_funding_usd: row.cumulative_funding_usd,
+      cumulative_fees_usd: row.cumulative_fees_usd,
     }
     await closePaperPosition(supabase, pos, 'closed', new Date().toISOString())
     return Response.json({ positionId: pos.id, status: 'closed' })

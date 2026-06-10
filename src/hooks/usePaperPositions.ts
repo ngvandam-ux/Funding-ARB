@@ -1,4 +1,6 @@
-// src/hooks/usePaperPositions.ts — open/at_risk positions.
+// src/hooks/usePaperPositions.ts — ALL positions (open + closed/liquidated).
+// Consumers filter by status: PaperPositions shows open/at_risk; Header needs
+// closed rows too so realized P&L reaches the portfolio total.
 import { useMemo } from 'react'
 import { useRealtimeRows } from './useRealtimeRows'
 import type { PaperPosition, PositionStatus } from '../types/domain'
@@ -29,7 +31,6 @@ export function usePaperPositions() {
         realizedPnlUsd: numOrNull(r.realized_pnl_usd),
       }),
       key: (d: PaperPosition) => d.id,
-      keep: (d: PaperPosition) => d.status === 'open' || d.status === 'at_risk',
       sort: (a: PaperPosition, b: PaperPosition) => b.openedAt.localeCompare(a.openedAt),
     }),
     [],

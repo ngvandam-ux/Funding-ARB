@@ -18,6 +18,12 @@ export const SLIPPAGE_BPS_BY_TIER: Record<Tier, number> = {
   alt: 50,
 } as const
 
+// Single-venue funding harvest (SPEC §5.1) is spot + perp. The spot hedge leg is
+// modeled with a flat retail spot taker fee — venue spot fee schedules cluster
+// around 10 bps — plus the same tier slippage as the perp leg. Without this the
+// strategy's cost base is understated by roughly half.
+export const SPOT_TAKER_BPS = 10
+
 const BPS = 10_000
 
 function assertPositiveFinite(value: number, label: string): void {
@@ -73,6 +79,25 @@ export function computeLegDrag(
   }
 }
 
+/**
+ * Round-trip drag of the synthetic spot hedge leg, in APR percentage points.
+ * Same shape as computeLegDrag so the detector can persist both.
+ */
+export function computeSpotLegDrag(
+  notionalUsd: number,
+  tier: Tier,
+  cyclesPerYear: number,
+): { feeDragPct: number; slipDragPct: number } {
+  assertPositiveFinite(notionalUsd, 'notionalUsd')
+  assertPositiveFinite(cyclesPerYear, 'cyclesPerYear')
+  const roundTripFee = 2 * notionalUsd * (SPOT_TAKER_BPS / BPS)
+  const roundTripSlip = 2 * applySlippage(notionalUsd, tier)
+  return {
+    feeDragPct: (roundTripFee / notionalUsd) * cyclesPerYear * 100,
+    slipDragPct: (roundTripSlip / notionalUsd) * cyclesPerYear * 100,
+  }
+}
+
 export interface ComputeNetAprArgs {
   grossApr: number // already-normalized APR % (fundingRate1hApr)
   positionNotionalUsd: number
@@ -82,8 +107,8 @@ export interface ComputeNetAprArgs {
 }
 
 /**
- * SPEC §5.1 — single-venue funding harvest (delta-neutral).
- * net = gross − fee drag − slippage drag, drags scaled by cyclesPerYear.
+ * SPEC §5.1 — single-venue funding harvest (delta-neutral via spot hedge).
+ * net = gross − perp leg drag − spot leg drag, drags scaled by cyclesPerYear.
  */
 export function computeNetApr(args: ComputeNetAprArgs): number {
   const { grossApr, positionNotionalUsd, venueId, tier, cyclesPerYear } = args
@@ -92,13 +117,11 @@ export function computeNetApr(args: ComputeNetAprArgs): number {
   if (!Number.isFinite(grossApr)) {
     throw new Error(`grossApr must be finite, got ${grossApr}`)
   }
-  const { feeDragPct, slipDragPct } = computeLegDrag(
-    positionNotionalUsd,
-    venueId,
-    tier,
-    cyclesPerYear,
+  const perp = computeLegDrag(positionNotionalUsd, venueId, tier, cyclesPerYear)
+  const spot = computeSpotLegDrag(positionNotionalUsd, tier, cyclesPerYear)
+  return (
+    grossApr - perp.feeDragPct - perp.slipDragPct - spot.feeDragPct - spot.slipDragPct
   )
-  return grossApr - feeDragPct - slipDragPct
 }
 
 export interface BasisArbLeg {

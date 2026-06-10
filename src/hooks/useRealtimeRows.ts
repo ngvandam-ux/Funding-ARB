@@ -18,6 +18,11 @@ interface Options<TDomain> {
   sort?: (a: TDomain, b: TDomain) => number
   // Optional PostgREST filter string for the initial select, e.g. "status=eq.open".
   initialFilter?: string
+  // Optional server-side order + row cap for the initial select. Without these,
+  // PostgREST silently truncates unbounded selects at max_rows (1000) — and in
+  // insertion order, i.e. the OLDEST rows for append-only tables.
+  initialOrder?: { column: string; ascending: boolean }
+  initialLimit?: number
   // Realtime is INSERT+UPDATE by default; views (latest_funding) can't be subscribed
   // directly — subscribe to the backing table instead via `realtimeTable`.
   realtimeTable?: string
@@ -48,7 +53,11 @@ export function useRealtimeRows<TDomain>(opts: Options<TDomain>): {
         // Only the operators we use here:
         q = op === 'eq' ? q.eq(col, val) : q.in(col, val.split(','))
       }
-      const { data: rows, error: err } = await q
+      const ordered = opts.initialOrder
+        ? q.order(opts.initialOrder.column, { ascending: opts.initialOrder.ascending })
+        : q
+      const limited = opts.initialLimit ? ordered.limit(opts.initialLimit) : ordered
+      const { data: rows, error: err } = await limited
       if (cancelled) return
       if (err) {
         setError(err.message)

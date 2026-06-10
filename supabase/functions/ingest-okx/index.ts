@@ -17,11 +17,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
-import {
-  normalizeOkx,
-  OkxFundingSchema,
-  type OkxFunding,
-} from '../_shared/normalize.ts'
+import { normalizeOkx, OkxFundingSchema } from '../_shared/normalize.ts'
 
 const BASE = 'https://www.okx.com/api/v5'
 const FUNDING_RATE = `${BASE}/public/funding-rate`
@@ -94,56 +90,68 @@ Deno.serve(async () => {
     const idxMap = new Map(IndexTickersResp.parse(idxRaw).data.map((d) => [d.instId, d.idxPx]))
     const oiMap = new Map(OpenInterestResp.parse(oiRaw).data.map((d) => [d.instId, d.oiUsd]))
 
-    // funding-rate is per-instId (batch is rejected — api-notes §4 correction #2).
-    const fundingByInst = new Map<string, OkxFunding>()
+    const ts = new Date()
+    const rows = []
     for (const inst of tracked) {
-      const raw = await fetchJson(`${FUNDING_RATE}?instId=${inst.venue_symbol}`)
-      const parsed = FundingResp.parse(raw)
-      const f = parsed.data[0]
-      if (f === undefined) {
-        throw new Error(`okx funding-rate returned no data for ${inst.venue_symbol}`)
+      // Per-symbol resilience: a delisted/renamed instId, a per-instId funding
+      // fetch failure, or one bad normalize skips that instrument (logged loud)
+      // instead of killing the whole batch.
+      try {
+        // funding-rate is per-instId (batch is rejected — api-notes §4 correction #2).
+        const raw = await fetchJson(`${FUNDING_RATE}?instId=${inst.venue_symbol}`)
+        const parsed = FundingResp.parse(raw)
+        const funding = parsed.data[0]
+        if (funding === undefined) {
+          throw new Error(`okx funding-rate returned no data for ${inst.venue_symbol}`)
+        }
+        const markPx = markMap.get(inst.venue_symbol)
+        // index instId is the UNDERLYING: BTC-USDT-SWAP → BTC-USDT.
+        const underlying = inst.venue_symbol.replace(/-SWAP$/, '')
+        const idxPx = idxMap.get(underlying)
+        if (markPx === undefined || idxPx === undefined) {
+          throw new Error(
+            `okx missing data for ${inst.venue_symbol} ` +
+              `(mark=${!!markPx} idx=${!!idxPx})`,
+          )
+        }
+        const oiUsd = oiMap.get(inst.venue_symbol)
+        const n = normalizeOkx({
+          funding,
+          ticker: { instId: inst.venue_symbol, markPx, idxPx },
+          baseSymbol: inst.base_symbol,
+          openInterestUsd: oiUsd !== undefined ? Number(oiUsd) : null,
+          ts,
+        })
+        rows.push({
+          instrument_id: inst.id,
+          ts: n.ts.toISOString(),
+          funding_rate_native: n.fundingRateNative,
+          funding_rate_1h_apr: n.fundingRate1hApr,
+          next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
+          mark_price: n.markPrice,
+          index_price: n.indexPrice,
+          open_interest_usd: n.openInterestUsd,
+          raw: { funding, markPx, idxPx, oiUsd: oiUsd ?? null },
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(
+          JSON.stringify({ venue: VENUE, instrument: inst.venue_symbol, skipError: message }),
+        )
+        continue
       }
-      fundingByInst.set(inst.venue_symbol, f)
     }
 
-    const ts = new Date()
-    const rows = tracked.map((inst) => {
-      const funding = fundingByInst.get(inst.venue_symbol)
-      const markPx = markMap.get(inst.venue_symbol)
-      // index instId is the UNDERLYING: BTC-USDT-SWAP → BTC-USDT.
-      const underlying = inst.venue_symbol.replace(/-SWAP$/, '')
-      const idxPx = idxMap.get(underlying)
-      if (funding === undefined || markPx === undefined || idxPx === undefined) {
-        throw new Error(
-          `okx missing data for ${inst.venue_symbol} ` +
-            `(funding=${!!funding} mark=${!!markPx} idx=${!!idxPx})`,
-        )
-      }
-      const oiUsd = oiMap.get(inst.venue_symbol)
-      const n = normalizeOkx({
-        funding,
-        ticker: { instId: inst.venue_symbol, markPx, idxPx },
-        baseSymbol: inst.base_symbol,
-        openInterestUsd: oiUsd !== undefined ? Number(oiUsd) : null,
-        ts,
-      })
-      return {
-        instrument_id: inst.id,
-        ts: n.ts.toISOString(),
-        funding_rate_native: n.fundingRateNative,
-        funding_rate_1h_apr: n.fundingRate1hApr,
-        next_funding_ts: n.nextFundingTs ? n.nextFundingTs.toISOString() : null,
-        mark_price: n.markPrice,
-        index_price: n.indexPrice,
-        open_interest_usd: n.openInterestUsd,
-        raw: { funding, markPx, idxPx, oiUsd: oiUsd ?? null },
-      }
-    })
+    // Every tracked symbol failed → the venue feed is genuinely dead. Fail loud
+    // so the cron retries, instead of inserting nothing and looking healthy.
+    if (rows.length === 0 && tracked.length > 0) {
+      throw new Error(`all ${tracked.length} tracked okx symbols failed to normalize`)
+    }
 
     const { error: insErr } = await supabase.from('funding_snapshots').insert(rows)
     if (insErr) throw new Error(`db insert funding_snapshots failed: ${insErr.message}`)
 
-    return Response.json({ inserted: rows.length })
+    return Response.json({ inserted: rows.length, skipped: tracked.length - rows.length })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(JSON.stringify({ venue: VENUE, endpoint: FUNDING_RATE, error: message }))

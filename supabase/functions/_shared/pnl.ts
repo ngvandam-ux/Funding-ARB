@@ -1,9 +1,9 @@
-// Pure paper-trade P&L math (SPEC §6 + Session 3 design). No I/O, no clock —
-// marks / dt / now are all injected so this is deterministic and unit-tested.
-// Reuses the fee + slippage tables from math.ts.
+// Deno mirror of src/lib/pnl.ts. src/lib/pnl.ts is the Vitest-tested SOURCE OF
+// TRUTH (pnl.test.ts); this copy is for the Edge Function runtime. Keep behavior
+// byte-for-byte identical. Pure paper-trade P&L math (SPEC §6); no I/O, no clock.
 
 import type { VenueId, Tier } from './domain.ts'
-import { VENUE_TAKER_BPS, SLIPPAGE_BPS_BY_TIER } from './math.ts'
+import { VENUE_TAKER_BPS, SLIPPAGE_BPS_BY_TIER, SPOT_TAKER_BPS } from './math.ts'
 
 export const PAPER_LEVERAGE = 3
 export const MAINTENANCE_MARGIN_FRACTION = 0.005
@@ -15,7 +15,6 @@ export const LIQUIDATION_BUFFER_FRACTION = 0.05
 export const INITIAL_BUFFER_FRACTION =
   1 / PAPER_LEVERAGE - MAINTENANCE_MARGIN_FRACTION
 
-const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000
 const BPS = 10_000
 
 export type Side = 'long' | 'short'
@@ -58,11 +57,26 @@ export interface OpenFill {
   slippageBps: number
   slippageUsd: number
 }
+// Single-venue harvest is spot + perp (SPEC §5.1): the spot hedge is synthetic
+// (no fill row, perfect hedge assumed) but its costs are real and charged here.
+export interface SpotLegCosts {
+  feeUsd: number
+  slippageUsd: number
+}
 export interface OpenResult {
   legA: OpenFill
   legB: OpenFill | null
+  spotLeg: SpotLegCosts | null
   feesUsd: number
   slippageUsd: number
+  openCostsUsd: number
+}
+
+function spotLegCosts(sizeUsd: number, tier: Tier): SpotLegCosts {
+  return {
+    feeUsd: sizeUsd * (SPOT_TAKER_BPS / BPS),
+    slippageUsd: legSlippage(sizeUsd, tier).usd,
+  }
 }
 
 export function computeOpenFills(args: {
@@ -87,11 +101,17 @@ export function computeOpenFills(args: {
   }
   const a = build(legA)
   const b = legB ? build(legB) : null
+  const spot = legB ? null : spotLegCosts(sizeUsd, legA.tier)
+  const feesUsd = a.feeUsd + (b ? b.feeUsd : 0) + (spot ? spot.feeUsd : 0)
+  const slippageUsd =
+    a.slippageUsd + (b ? b.slippageUsd : 0) + (spot ? spot.slippageUsd : 0)
   return {
     legA: a,
     legB: b,
-    feesUsd: a.feeUsd + (b ? b.feeUsd : 0),
-    slippageUsd: a.slippageUsd + (b ? b.slippageUsd : 0),
+    spotLeg: spot,
+    feesUsd,
+    slippageUsd,
+    openCostsUsd: feesUsd + slippageUsd,
   }
 }
 
@@ -122,23 +142,78 @@ export function computeUnrealizedPnl(args: {
   )
 }
 
-export function accrueFunding(args: {
-  legA: { side: Side; fundingRate1hApr: number }
-  legB: { side: Side; fundingRate1hApr: number } | null
+// Venue funding cadences (api-notes §1-4). OKX occasionally runs 4h intervals on
+// exotic symbols; the tracked BTC/ETH/SOL swaps are 8h. If OKX 4h instruments are
+// ever added, derive the interval per-instrument instead of per-venue.
+export const VENUE_FUNDING_INTERVAL_HOURS: Record<VenueId, number> = {
+  hyperliquid: 1,
+  binance_futures: 8,
+  bybit: 8,
+  okx: 8,
+} as const
+
+// Funding settles DISCRETELY at venue funding times (SPEC §6.2.3) — you are paid
+// only when you hold across a settlement, at the rate fixed for that interval.
+// The continuous pro-rata accrual this replaces systematically over-credited
+// transient rate spikes (auto-open buys spikes by construction).
+export interface SettleLeg {
+  side: Side
+  // Rate per funding interval as a decimal fraction (funding_rate_native).
+  fundingRateNative: number
+  intervalHours: number
+  // A known settlement timestamp for this venue (e.g. next_funding_ts).
+  // null → settlements assumed epoch-aligned (true for 1h and 00/08/16-UTC venues).
+  anchorMs?: number | null
+}
+
+function settlementsCrossed(lastMs: number, nowMs: number, intervalMs: number, anchorMs: number): number {
+  // Settlement times are anchor + k·interval; count those in (lastMs, nowMs].
+  return Math.floor((nowMs - anchorMs) / intervalMs) - Math.floor((lastMs - anchorMs) / intervalMs)
+}
+
+export function settleFundingDiscrete(args: {
+  legA: SettleLeg
+  legB: SettleLeg | null
   sizeUsd: number
-  dtMs: number
+  lastMs: number
+  nowMs: number
 }): number {
-  const { legA, legB, sizeUsd, dtMs } = args
-  if (!Number.isFinite(dtMs) || dtMs < 0) {
-    throw new Error(`dtMs must be a finite number >= 0, got ${dtMs}`)
+  const { legA, legB, sizeUsd, lastMs, nowMs } = args
+  assertPositiveFinite(sizeUsd, 'sizeUsd')
+  if (!Number.isFinite(lastMs) || !Number.isFinite(nowMs) || nowMs < lastMs) {
+    throw new Error(`invalid settlement window: lastMs=${lastMs} nowMs=${nowMs}`)
   }
-  const dtYears = dtMs / MS_PER_YEAR
-  // Positive funding pays shorts: a short RECEIVES +r, a long pays (−r).
-  const legFunding = (leg: { side: Side; fundingRate1hApr: number }): number => {
-    const receivedApr = leg.side === 'short' ? leg.fundingRate1hApr : -leg.fundingRate1hApr
-    return sizeUsd * (receivedApr / 100) * dtYears
+  const legSettled = (leg: SettleLeg): number => {
+    assertPositiveFinite(leg.intervalHours, 'intervalHours')
+    if (!Number.isFinite(leg.fundingRateNative)) {
+      throw new Error(`fundingRateNative must be finite, got ${leg.fundingRateNative}`)
+    }
+    const intervalMs = leg.intervalHours * 3_600_000
+    const n = settlementsCrossed(lastMs, nowMs, intervalMs, leg.anchorMs ?? 0)
+    if (n <= 0) return 0
+    // Positive funding pays shorts: a short RECEIVES +r, a long pays (−r).
+    const receivedPerSettlement =
+      sizeUsd * (leg.side === 'short' ? leg.fundingRateNative : -leg.fundingRateNative)
+    return n * receivedPerSettlement
   }
-  return legFunding(legA) + (legB ? legFunding(legB) : 0)
+  return legSettled(legA) + (legB ? legSettled(legB) : 0)
+}
+
+// Exit rule: a funding-harvest position only earns while its net funding receipt
+// is positive; once it stops earning for EXIT_NEGATIVE_TICKS consecutive 5-min
+// ticks (30 min), close it. Without this the measured strategy is
+// "open at spike, hold forever" — which nobody would run with real money.
+export const EXIT_NEGATIVE_TICKS = 6
+
+export function nextNegativeFundingStreak(netReceiptApr: number, prevStreak: number): number {
+  if (!Number.isFinite(netReceiptApr)) {
+    throw new Error(`netReceiptApr must be finite, got ${netReceiptApr}`)
+  }
+  return netReceiptApr > 0 ? 0 : prevStreak + 1
+}
+
+export function shouldAutoClose(streak: number): boolean {
+  return streak >= EXIT_NEGATIVE_TICKS
 }
 
 function adverseFraction(side: Side, entryPrice: number, mark: number): number {
@@ -197,11 +272,12 @@ export interface CloseFill {
 export interface CloseResult {
   legA: CloseFill
   legB: CloseFill | null
+  spotLeg: SpotLegCosts | null
   pricePnl: number
   closeFeesUsd: number
   closeSlippageUsd: number
-  totalFeesUsd: number
-  totalSlippageUsd: number
+  closeCostsUsd: number
+  totalCostsUsd: number
   realizedPnlUsd: number
 }
 
@@ -212,9 +288,15 @@ export function computeClose(args: {
   markB: number | null
   sizeUsd: number
   cumulativeFundingUsd: number
+  // Open-side costs as actually recorded at open time — never re-derived here,
+  // so a fee-table change mid-run can't silently rewrite history.
+  openCostsUsd: number
 }): CloseResult {
-  const { legA, legB, markA, markB, sizeUsd, cumulativeFundingUsd } = args
+  const { legA, legB, markA, markB, sizeUsd, cumulativeFundingUsd, openCostsUsd } = args
   assertPositiveFinite(sizeUsd, 'sizeUsd')
+  if (!Number.isFinite(openCostsUsd) || openCostsUsd < 0) {
+    throw new Error(`openCostsUsd must be a finite number >= 0, got ${openCostsUsd}`)
+  }
   const buildClose = (leg: CloseLegInput, mark: number): CloseFill => {
     assertPositiveFinite(mark, 'mark')
     const feeUsd = legFeeUsd(sizeUsd, leg.venueId)
@@ -223,6 +305,7 @@ export function computeClose(args: {
   }
   const a = buildClose(legA, markA)
   const b = legB ? buildClose(legB, markB as number) : null
+  const spot = legB ? null : spotLegCosts(sizeUsd, legA.tier)
   const pricePnl = computeUnrealizedPnl({
     legA: { side: legA.side, entryPrice: legA.entryPrice },
     legB: legB ? { side: legB.side, entryPrice: legB.entryPrice } : null,
@@ -230,21 +313,21 @@ export function computeClose(args: {
     markB,
     sizeUsd,
   })
-  const closeFeesUsd = a.feeUsd + (b ? b.feeUsd : 0)
-  const closeSlippageUsd = a.slippageUsd + (b ? b.slippageUsd : 0)
-  // Open incurred the same per-leg fee + slippage, so round-trip = 2× close.
-  const totalFeesUsd = 2 * closeFeesUsd
-  const totalSlippageUsd = 2 * closeSlippageUsd
-  const realizedPnlUsd =
-    pricePnl + cumulativeFundingUsd - totalFeesUsd - totalSlippageUsd
+  const closeFeesUsd = a.feeUsd + (b ? b.feeUsd : 0) + (spot ? spot.feeUsd : 0)
+  const closeSlippageUsd =
+    a.slippageUsd + (b ? b.slippageUsd : 0) + (spot ? spot.slippageUsd : 0)
+  const closeCostsUsd = closeFeesUsd + closeSlippageUsd
+  const totalCostsUsd = openCostsUsd + closeCostsUsd
+  const realizedPnlUsd = pricePnl + cumulativeFundingUsd - totalCostsUsd
   return {
     legA: a,
     legB: b,
+    spotLeg: spot,
     pricePnl,
     closeFeesUsd,
     closeSlippageUsd,
-    totalFeesUsd,
-    totalSlippageUsd,
+    closeCostsUsd,
+    totalCostsUsd,
     realizedPnlUsd,
   }
 }

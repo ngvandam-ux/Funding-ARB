@@ -3,9 +3,11 @@ import {
   computeNetApr,
   computeBasisArbNetApr,
   computeLegDrag,
+  computeSpotLegDrag,
   applySlippage,
   VENUE_TAKER_BPS,
   SLIPPAGE_BPS_BY_TIER,
+  SPOT_TAKER_BPS,
 } from './math'
 
 // All formulas come from SPEC §5. Fees from api-notes §6, slippage from api-notes §7.
@@ -52,14 +54,33 @@ describe('VENUE_TAKER_BPS', () => {
   })
 })
 
+describe('computeSpotLegDrag (synthetic spot hedge for single-venue harvest)', () => {
+  it('uses the flat spot taker fee plus tier slippage, round-trip', () => {
+    // SPOT_TAKER_BPS = 10 ; round-trip fee = 20 bps = 0.20% ; mid slip round-trip = 30 bps = 0.30%
+    expect(SPOT_TAKER_BPS).toBe(10)
+    const drag = computeSpotLegDrag(100_000, 'mid', 1)
+    expect(drag.feeDragPct).toBeCloseTo(0.2, 6)
+    expect(drag.slipDragPct).toBeCloseTo(0.3, 6)
+  })
+
+  it('scales linearly with cyclesPerYear', () => {
+    const one = computeSpotLegDrag(100_000, 'major', 1)
+    const three = computeSpotLegDrag(100_000, 'major', 3)
+    expect(three.feeDragPct).toBeCloseTo(one.feeDragPct * 3, 9)
+    expect(three.slipDragPct).toBeCloseTo(one.slipDragPct * 3, 9)
+  })
+
+  it('throws on a non-positive notional', () => {
+    expect(() => computeSpotLegDrag(0, 'major', 1)).toThrow()
+  })
+})
+
 describe('computeNetApr (single-venue funding harvest)', () => {
-  it('subtracts fee drag and slippage drag, scaled by cyclesPerYear', () => {
+  it('subtracts perp drag AND the spot-hedge leg drag, scaled by cyclesPerYear', () => {
     // gross 50% APR, $100k notional, hyperliquid (4.5 bps taker), major (5 bps), 1 cycle/yr.
-    // round-trip fee = open+close on the single short leg = 2 * 4.5 bps = 9 bps of 100k = $90
-    // slippage round-trip = 2 * 5 bps = 10 bps of 100k = $100
-    // feeDrag% = 90 / 100000 * 1 * 100 = 0.09%
-    // slipDrag% = 100 / 100000 * 1 * 100 = 0.10%
-    // net = 50 - 0.09 - 0.10 = 49.81
+    // perp round-trip fee = 2 × 4.5 bps = 0.09% ; perp round-trip slip = 2 × 5 bps = 0.10%
+    // spot round-trip fee = 2 × SPOT_TAKER_BPS (10 bps) = 0.20% ; spot slip = 2 × 5 bps = 0.10%
+    // net = 50 − 0.09 − 0.10 − 0.20 − 0.10 = 49.51
     const net = computeNetApr({
       grossApr: 50,
       positionNotionalUsd: 100_000,
@@ -67,12 +88,11 @@ describe('computeNetApr (single-venue funding harvest)', () => {
       tier: 'major',
       cyclesPerYear: 1,
     })
-    expect(net).toBeCloseTo(49.81, 6)
+    expect(net).toBeCloseTo(49.51, 6)
   })
 
   it('scales drag up with more cycles per year', () => {
-    // Same as above but 4 cycles/yr → drag is 4x.
-    // feeDrag% = 0.09 * 4 = 0.36 ; slipDrag% = 0.10 * 4 = 0.40 ; net = 50 - 0.76 = 49.24
+    // Same as above but 4 cycles/yr → drag is 4×: 50 − 4 × 0.49 = 48.04
     const net = computeNetApr({
       grossApr: 50,
       positionNotionalUsd: 100_000,
@@ -80,7 +100,7 @@ describe('computeNetApr (single-venue funding harvest)', () => {
       tier: 'major',
       cyclesPerYear: 4,
     })
-    expect(net).toBeCloseTo(49.24, 6)
+    expect(net).toBeCloseTo(48.04, 6)
   })
 
   it('can go negative when drag exceeds a tiny gross APR', () => {
@@ -143,8 +163,9 @@ describe('computeLegDrag (per-leg fee + slippage drag breakdown)', () => {
     expect(four.slipDragPct).toBeCloseTo(one.slipDragPct * 4, 9)
   })
 
-  it('agrees with computeNetApr (gross − feeDrag − slipDrag)', () => {
+  it('agrees with computeNetApr (gross − perp drag − spot drag)', () => {
     const drag = computeLegDrag(100_000, 'hyperliquid', 'major', 1)
+    const spot = computeSpotLegDrag(100_000, 'major', 1)
     const net = computeNetApr({
       grossApr: 50,
       positionNotionalUsd: 100_000,
@@ -152,7 +173,10 @@ describe('computeLegDrag (per-leg fee + slippage drag breakdown)', () => {
       tier: 'major',
       cyclesPerYear: 1,
     })
-    expect(net).toBeCloseTo(50 - drag.feeDragPct - drag.slipDragPct, 6)
+    expect(net).toBeCloseTo(
+      50 - drag.feeDragPct - drag.slipDragPct - spot.feeDragPct - spot.slipDragPct,
+      6,
+    )
   })
 
   it('throws on a non-positive notional', () => {

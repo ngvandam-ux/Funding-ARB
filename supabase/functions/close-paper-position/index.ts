@@ -34,6 +34,7 @@ const PosRow = z.object({
   leg_b_side: z.enum(['long', 'short']).nullable(),
   leg_b_entry_price: numeric.nullable(),
   cumulative_funding_usd: numeric,
+  cumulative_fees_usd: numeric,
 })
 
 Deno.serve(async (req) => {
@@ -52,7 +53,7 @@ Deno.serve(async (req) => {
     const { data, error } = await supabase
       .from('paper_positions')
       .select(
-        'id, status, position_size_usd, leg_a_instrument_id, leg_a_side, leg_a_entry_price, leg_b_instrument_id, leg_b_side, leg_b_entry_price, cumulative_funding_usd',
+        'id, status, position_size_usd, leg_a_instrument_id, leg_a_side, leg_a_entry_price, leg_b_instrument_id, leg_b_side, leg_b_entry_price, cumulative_funding_usd, cumulative_fees_usd',
       )
       .eq('id', body.positionId)
       .single()
@@ -72,6 +73,7 @@ Deno.serve(async (req) => {
       leg_b_side: row.leg_b_side,
       leg_b_entry_price: row.leg_b_entry_price,
       cumulative_funding_usd: row.cumulative_funding_usd,
+      cumulative_fees_usd: row.cumulative_fees_usd,
     }
     await closePaperPosition(supabase, pos, 'closed', new Date().toISOString())
     return Response.json({ positionId: pos.id, status: 'closed' })

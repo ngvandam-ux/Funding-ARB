@@ -11,7 +11,7 @@
 // A leg is usable only if its snapshot is fresh (≤ 5 min). Cross-venue needs both.
 
 import type { VenueId, Tier, OpportunityKind } from '../types/domain'
-import { computeNetApr, computeBasisArbNetApr, computeLegDrag } from './math'
+import { computeNetApr, computeBasisArbNetApr, computeLegDrag, computeSpotLegDrag } from './math'
 
 export type Side = 'long' | 'short'
 
@@ -92,12 +92,10 @@ export function detectOpportunities(
   // --- Strategy A: single-venue funding harvest -----------------------------
   for (const s of fresh) {
     const grossApr = Math.abs(s.fundingRate1hApr) // magnitude harvested either way
-    const { feeDragPct, slipDragPct } = computeLegDrag(
-      minPositionUsd,
-      s.venueId,
-      s.tier,
-      cyclesPerYear,
-    )
+    const perpDrag = computeLegDrag(minPositionUsd, s.venueId, s.tier, cyclesPerYear)
+    // Drag fields persist BOTH legs (perp + synthetic spot hedge) so that
+    // netApr === grossApr − feeDragApr − slipDragApr stays true for consumers.
+    const spotDrag = computeSpotLegDrag(minPositionUsd, s.tier, cyclesPerYear)
     const netApr = computeNetApr({
       grossApr,
       positionNotionalUsd: minPositionUsd,
@@ -120,8 +118,8 @@ export function detectOpportunities(
       },
       legB: null,
       grossApr,
-      feeDragApr: feeDragPct,
-      slipDragApr: slipDragPct,
+      feeDragApr: perpDrag.feeDragPct + spotDrag.feeDragPct,
+      slipDragApr: perpDrag.slipDragPct + spotDrag.slipDragPct,
       netApr,
       minPositionUsd,
       dedupKey: `single:${s.baseSymbol}:${s.venueId}`,

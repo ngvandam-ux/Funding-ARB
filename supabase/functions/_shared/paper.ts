@@ -13,7 +13,15 @@ export interface LatestMark {
   tier: Tier
   venueId: VenueId
   fundingRate1hApr: number
+  fundingRateNative: number
+  tsMs: number
+  nextFundingMs: number | null
 }
+
+// A mark older than this is a dead ingest, not a price. Accruing funding or
+// marking-to-market against it fabricates P&L — refuse instead (fail loud;
+// callers skip the position/opportunity and the next healthy tick resumes).
+export const MAX_MARK_AGE_MS = 10 * 60 * 1000
 
 const numeric = z
   .union([z.string(), z.number()])
@@ -26,25 +34,41 @@ const MarkRow = z.object({
   tier: z.enum(['major', 'mid', 'alt']),
   mark_price: numeric,
   funding_rate_1h_apr: numeric,
+  funding_rate_native: numeric,
+  ts: z.string(),
+  next_funding_ts: z.string().nullable(),
 })
 
 export async function loadLatestMarks(
   supabase: SupabaseClient,
   instrumentIds: number[],
+  nowMs: number,
 ): Promise<Map<number, LatestMark>> {
   const { data, error } = await supabase
     .from('latest_funding')
-    .select('instrument_id, venue_id, tier, mark_price, funding_rate_1h_apr')
+    .select(
+      'instrument_id, venue_id, tier, mark_price, funding_rate_1h_apr, funding_rate_native, ts, next_funding_ts',
+    )
     .in('instrument_id', instrumentIds)
   if (error) throw new Error(`db read latest_funding failed: ${error.message}`)
   const map = new Map<number, LatestMark>()
   for (const r of data ?? []) {
     const row = MarkRow.parse(r)
+    const tsMs = new Date(row.ts).getTime()
+    if (nowMs - tsMs > MAX_MARK_AGE_MS) {
+      throw new Error(
+        `stale mark for instrument ${row.instrument_id} (${row.venue_id}): ` +
+          `${Math.round((nowMs - tsMs) / 60000)} min old (max ${MAX_MARK_AGE_MS / 60000})`,
+      )
+    }
     map.set(row.instrument_id, {
       mark: row.mark_price,
       tier: row.tier,
       venueId: row.venue_id,
       fundingRate1hApr: row.funding_rate_1h_apr,
+      fundingRateNative: row.funding_rate_native,
+      tsMs,
+      nextFundingMs: row.next_funding_ts ? new Date(row.next_funding_ts).getTime() : null,
     })
   }
   return map
@@ -67,7 +91,7 @@ export async function openPaperPosition(
 ): Promise<number> {
   const ids = [opp.leg_a_instrument_id]
   if (opp.leg_b_instrument_id !== null) ids.push(opp.leg_b_instrument_id)
-  const marks = await loadLatestMarks(supabase, ids)
+  const marks = await loadLatestMarks(supabase, ids, Date.now())
 
   const markA = marks.get(opp.leg_a_instrument_id)
   if (!markA) throw new Error(`no fresh mark for leg A instrument ${opp.leg_a_instrument_id}`)
@@ -98,7 +122,9 @@ export async function openPaperPosition(
       leg_b_instrument_id: opp.leg_b_instrument_id,
       leg_b_side: fills.legB ? fills.legB.side : null,
       leg_b_entry_price: fills.legB ? fills.legB.entryPrice : null,
-      cumulative_fees_usd: fills.feesUsd,
+      // ALL open-side costs (fees + slippage, incl. the synthetic spot leg for
+      // single-venue) — computeClose consumes this as openCostsUsd at close.
+      cumulative_fees_usd: fills.openCostsUsd,
       dedup_key: opp.dedup_key,
     })
     .select('id')
@@ -155,6 +181,8 @@ export interface PositionRow {
   leg_b_side: Side | null
   leg_b_entry_price: number | null
   cumulative_funding_usd: number
+  // Open-side costs as recorded at open time (see openPaperPosition).
+  cumulative_fees_usd: number
 }
 
 export async function closePaperPosition(
@@ -162,10 +190,11 @@ export async function closePaperPosition(
   pos: PositionRow,
   finalStatus: 'closed' | 'liquidated_paper',
   closedAtIso: string,
+  closeNote?: string,
 ): Promise<number> {
   const ids = [pos.leg_a_instrument_id]
   if (pos.leg_b_instrument_id !== null) ids.push(pos.leg_b_instrument_id)
-  const marks = await loadLatestMarks(supabase, ids)
+  const marks = await loadLatestMarks(supabase, ids, new Date(closedAtIso).getTime())
 
   const markA = marks.get(pos.leg_a_instrument_id)
   if (!markA) throw new Error(`no fresh mark for leg A instrument ${pos.leg_a_instrument_id}`)
@@ -190,6 +219,7 @@ export async function closePaperPosition(
     markB: markB ? markB.mark : null,
     sizeUsd: pos.position_size_usd,
     cumulativeFundingUsd: pos.cumulative_funding_usd,
+    openCostsUsd: pos.cumulative_fees_usd,
   })
 
   const closeRows = [
@@ -221,16 +251,35 @@ export async function closePaperPosition(
   const { error: fillErr } = await supabase.from('paper_fills').insert(closeRows)
   if (fillErr) throw new Error(`db insert close fills failed: ${fillErr.message}`)
 
+  // Terminal status, closed_at and realized P&L land in ONE update so a failure
+  // anywhere above leaves the position open and retryable — never stranded in a
+  // terminal status with no realized P&L.
   const { error: updErr } = await supabase
     .from('paper_positions')
     .update({
       status: finalStatus,
       closed_at: closedAtIso,
       realized_pnl_usd: result.realizedPnlUsd,
-      cumulative_fees_usd: result.totalFeesUsd,
+      cumulative_fees_usd: result.totalCostsUsd,
+      ...(closeNote ? { notes: closeNote } : {}),
     })
     .eq('id', pos.id)
   if (updErr) throw new Error(`db update paper_position ${pos.id} failed: ${updErr.message}`)
+
+  // Final snapshot: realized lands in the pnl_snapshots series (the dashboard's
+  // P&L curve reads this table) and unrealized goes to zero at close.
+  const { error: snapErr } = await supabase.from('pnl_snapshots').insert({
+    position_id: pos.id,
+    ts: closedAtIso,
+    unrealized_pnl_usd: 0,
+    realized_pnl_usd: result.realizedPnlUsd,
+    cumulative_funding_usd: pos.cumulative_funding_usd,
+    cumulative_fees_usd: result.totalCostsUsd,
+    leg_a_mark: result.legA.exitPrice,
+    leg_b_mark: result.legB ? result.legB.exitPrice : null,
+    liquidation_distance_bps: null,
+  })
+  if (snapErr) throw new Error(`db insert final pnl_snapshot failed: ${snapErr.message}`)
 
   return pos.id
 }

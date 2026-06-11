@@ -31,8 +31,20 @@ export function OpportunityTable({ rows }: { rows: Opportunity[] }) {
               <tr key={o.id} className="border-t border-white/5">
                 <td className="py-1 font-medium">{o.baseSymbol}</td>
                 <td>
-                  <Pill tone={o.kind === 'cross_venue_basis_arb' ? 'warn' : 'neutral'}>
-                    {o.kind === 'cross_venue_basis_arb' ? 'cross' : 'single'}
+                  <Pill
+                    tone={
+                      o.kind === 'cross_venue_basis_arb'
+                        ? 'warn'
+                        : o.kind === 'momentum_harvest'
+                          ? 'good'
+                          : 'neutral'
+                    }
+                  >
+                    {o.kind === 'cross_venue_basis_arb'
+                      ? 'cross'
+                      : o.kind === 'momentum_harvest'
+                        ? 'momentum'
+                        : 'single'}
                   </Pill>
                 </td>
                 <td className="text-right text-emerald-300">{fmtApr(o.netApr)}</td>

@@ -10,6 +10,9 @@ export const CROSS_OPEN_APR = 20
 export const MAX_SANE_APR = 200
 
 export function paperOpenBar(kind: OpportunityKind): number {
+  // momentum_harvest deliberately shares the single-venue bar: same single-leg
+  // delta-neutral economics, only the entry signal differs (promoted to
+  // auto-open 2026-06-11; its net APR already carries the harsher 52-cycle drag).
   return kind === 'cross_venue_basis_arb' ? CROSS_OPEN_APR : SINGLE_OPEN_APR
 }
 

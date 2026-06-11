@@ -26,7 +26,7 @@ const numeric = z
 
 const OppRow = z.object({
   id: z.number(),
-  kind: z.enum(['single_venue_funding_harvest', 'cross_venue_basis_arb']),
+  kind: z.enum(['single_venue_funding_harvest', 'cross_venue_basis_arb', 'momentum_harvest']),
   net_apr: numeric,
   leg_a_instrument_id: z.number(),
   leg_a_side: z.enum(['long', 'short']),
@@ -41,15 +41,15 @@ Deno.serve(async () => {
       auth: { persistSession: false },
     })
 
-    // Detect-only gate: momentum_harvest must NEVER auto-open (design doc
-    // 2026-06-11) — the 30-day honest-accounting cohort measures A and B only.
-    // The kind filter lives in the QUERY, and OppRow's enum stays two-kind on
-    // purpose: removing this filter without widening the enum fails loud.
+    // momentum_harvest PROMOTED to auto-open (Nick, 2026-06-11) — paper-only
+    // cohort, P&L segmentable by dedup_key prefix. The explicit kind list (and
+    // OppRow's matching enum) stays: any FUTURE kind ships detect-only until
+    // it is added here, and an unlisted kind can never crash the cron.
     const { data: oppData, error: oppErr } = await supabase
       .from('opportunities')
       .select('id, kind, net_apr, leg_a_instrument_id, leg_a_side, leg_b_instrument_id, leg_b_side, dedup_key')
       .eq('status', 'open')
-      .in('kind', ['single_venue_funding_harvest', 'cross_venue_basis_arb'])
+      .in('kind', ['single_venue_funding_harvest', 'cross_venue_basis_arb', 'momentum_harvest'])
     if (oppErr) throw new Error(`db read opportunities failed: ${oppErr.message}`)
     const opps = (oppData ?? []).map((r) => OppRow.parse(r))
 

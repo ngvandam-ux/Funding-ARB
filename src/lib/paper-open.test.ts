@@ -9,6 +9,9 @@ describe('bars', () => {
     expect(paperOpenBar('single_venue_funding_harvest')).toBe(15)
     expect(paperOpenBar('cross_venue_basis_arb')).toBe(20)
   })
+  it('momentum_harvest shares the single-venue bar (same single-leg economics)', () => {
+    expect(paperOpenBar('momentum_harvest')).toBe(SINGLE_OPEN_APR)
+  })
 })
 
 describe('shouldAutoOpen', () => {
@@ -21,6 +24,11 @@ describe('shouldAutoOpen', () => {
   it('skips below the bar', () => {
     expect(shouldAutoOpen('single_venue_funding_harvest', 10)).toBe(false)
     expect(shouldAutoOpen('cross_venue_basis_arb', 18)).toBe(false)
+  })
+  it('momentum_harvest: opens at/above 15, skips below, ceiling applies', () => {
+    expect(shouldAutoOpen('momentum_harvest', 15)).toBe(true)
+    expect(shouldAutoOpen('momentum_harvest', 14.99)).toBe(false)
+    expect(shouldAutoOpen('momentum_harvest', 1076.7)).toBe(false)
   })
   it('CIRCUIT BREAKER: skips absurd APR above the sanity ceiling (bad data)', () => {
     expect(shouldAutoOpen('single_venue_funding_harvest', 1076.7)).toBe(false) // the incident value

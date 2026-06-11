@@ -9,3 +9,4 @@ export type Tier = 'major' | 'mid' | 'alt'
 export type OpportunityKind =
   | 'single_venue_funding_harvest'
   | 'cross_venue_basis_arb'
+  | 'momentum_harvest'

@@ -41,10 +41,15 @@ Deno.serve(async () => {
       auth: { persistSession: false },
     })
 
+    // Detect-only gate: momentum_harvest must NEVER auto-open (design doc
+    // 2026-06-11) — the 30-day honest-accounting cohort measures A and B only.
+    // The kind filter lives in the QUERY, and OppRow's enum stays two-kind on
+    // purpose: removing this filter without widening the enum fails loud.
     const { data: oppData, error: oppErr } = await supabase
       .from('opportunities')
       .select('id, kind, net_apr, leg_a_instrument_id, leg_a_side, leg_b_instrument_id, leg_b_side, dedup_key')
       .eq('status', 'open')
+      .in('kind', ['single_venue_funding_harvest', 'cross_venue_basis_arb'])
     if (oppErr) throw new Error(`db read opportunities failed: ${oppErr.message}`)
     const opps = (oppData ?? []).map((r) => OppRow.parse(r))
 

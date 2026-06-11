@@ -1,23 +1,17 @@
 // detect-opportunities — Supabase Edge Function (Deno).
 //
-// SPEC §8 Session 2, step 3. Thin I/O wrapper around the pure, tested detector
-// (_shared/detect.ts ← src/lib/detect.ts). Every 60s it:
-//   1. reads the `latest_funding` view (latest snapshot per active instrument),
-//   2. runs detectOpportunities (single ≥10%, cross ≥15%; stale legs dropped),
-//   3. reconciles the `opportunities` table to the live set keyed by dedup_key:
-//        - INSERT any newly-detected opp as status='open',
-//        - UPDATE the APRs of an already-open opp in place (keep detected_at),
-//        - mark any previously-open opp that is no longer detected 'expired'.
+// SPEC §8 Session 2, step 3 + momentum_harvest (design doc 2026-06-11). Thin
+// I/O wrapper around the pure, tested detectors (_shared/detect.ts and
+// _shared/stats.ts ← src/lib twins). Every 60s: read latest_funding +
+// funding_interval_rates (paged — can exceed PostgREST's 1000-row cap), run
+// detectOpportunities + detectMomentum, upsert funding_stats, then reconcile
+// `opportunities` keyed by dedup_key (insert new / update APRs in place /
+// expire no-longer-detected). Read-then-write (not ON CONFLICT) so the partial
+// unique index `opportunities_dedup_open` stays a pure safety net.
 //
-// We reconcile via an explicit read-then-write (not ON CONFLICT) so the partial
-// unique index `opportunities_dedup_open` stays a pure safety net and the
-// expire-when-gone half of the lifecycle is handled in the same pass.
-//
-// Hard rules (CLAUDE.md): no secrets in code, no `any` (zod parses the view rows),
+// momentum_harvest is DETECT-ONLY: auto-open filters the kind out by query.
+// Hard rules (CLAUDE.md): no secrets in code, no `any` (zod parses all rows),
 // fail loud. No venue I/O here — this function only touches our own DB.
-//
-// Deploy + schedule commands: see README.md in this folder. Requires the additive
-// migration in README (adds opportunities.dedup_key + the partial unique index).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
@@ -25,9 +19,17 @@ import {
   detectOpportunities,
   DEFAULT_THRESHOLDS,
   DEFAULT_MAX_STALENESS_MS,
-  type LatestSnapshot,
   type DetectedOpportunity,
+  type Side,
 } from '../_shared/detect.ts'
+import { detectMomentum, computeFundingStats } from '../_shared/stats.ts'
+import {
+  readAllRows,
+  parseLatestFundingRow,
+  parseIntervalRateRow,
+  LATEST_FUNDING_SELECT,
+  INTERVAL_RATES_SELECT,
+} from '../_shared/db.ts'
 
 const VENUE = 'detector'
 
@@ -37,23 +39,12 @@ function getEnv(name: string): string {
   return v
 }
 
-// PostgREST returns numeric columns as strings — coerce, rejecting NaN.
-const numeric = z
-  .union([z.string(), z.number()])
-  .transform((v) => Number(v))
-  .refine((n) => Number.isFinite(n), { message: 'expected a finite number' })
-
-const LatestFundingRow = z.object({
-  instrument_id: z.number(),
-  venue_id: z.enum(['hyperliquid', 'binance_futures', 'bybit', 'okx']),
-  base_symbol: z.string(),
-  venue_symbol: z.string(),
-  tier: z.enum(['major', 'mid', 'alt']),
-  funding_rate_1h_apr: numeric,
-  ts: z.string(),
+const OpenOppRow = z.object({
+  id: z.number(),
+  dedup_key: z.string(),
+  kind: z.string(),
+  leg_a_side: z.enum(['long', 'short']),
 })
-
-const OpenOppRow = z.object({ id: z.number(), dedup_key: z.string() })
 
 function toRow(o: DetectedOpportunity) {
   return {
@@ -82,47 +73,65 @@ Deno.serve(async () => {
       { auth: { persistSession: false } },
     )
 
-    // 1. Read the latest snapshot per active instrument.
+    // 1. Latest snapshot per active instrument + settled per-interval rates.
     const { data: viewData, error: viewErr } = await supabase
       .from('latest_funding')
-      .select('instrument_id, venue_id, base_symbol, venue_symbol, tier, funding_rate_1h_apr, ts')
+      .select(LATEST_FUNDING_SELECT)
     if (viewErr) throw new Error(`db read latest_funding failed: ${viewErr.message}`)
-    const snapshots: LatestSnapshot[] = (viewData ?? []).map((r) => {
-      const row = LatestFundingRow.parse(r)
-      return {
-        instrumentId: row.instrument_id,
-        venueId: row.venue_id,
-        baseSymbol: row.base_symbol,
-        venueSymbol: row.venue_symbol,
-        tier: row.tier,
-        fundingRate1hApr: row.funding_rate_1h_apr,
-        ts: new Date(row.ts),
-      }
-    })
-
-    // 2. Pure detection. `now` is the function clock; staleness handled inside.
-    const now = new Date()
-    const detected = detectOpportunities(snapshots, {
-      now,
-      maxStalenessMs: DEFAULT_MAX_STALENESS_MS,
-      thresholds: DEFAULT_THRESHOLDS,
-    })
-    const detectedByKey = new Map(detected.map((o) => [o.dedupKey, o]))
-
-    // 3a. Current open opportunities, keyed by dedup_key.
-    const { data: openData, error: openErr } = await supabase
-      .from('opportunities')
-      .select('id, dedup_key')
-      .eq('status', 'open')
-    if (openErr) throw new Error(`db read open opportunities failed: ${openErr.message}`)
-    const openByKey = new Map(
-      (openData ?? []).map((r) => {
-        const row = OpenOppRow.parse(r)
-        return [row.dedup_key, row.id]
-      }),
+    const snapshots = (viewData ?? []).map(parseLatestFundingRow)
+    const intervalRates = await readAllRows(
+      supabase,
+      'funding_interval_rates',
+      INTERVAL_RATES_SELECT,
+      parseIntervalRateRow,
     )
 
-    // 3b. Insert brand-new opps; update APRs of already-open ones in place.
+    // 2a. Current open opportunities, keyed by dedup_key (side feeds hysteresis).
+    const { data: openData, error: openErr } = await supabase
+      .from('opportunities')
+      .select('id, dedup_key, kind, leg_a_side')
+      .eq('status', 'open')
+    if (openErr) throw new Error(`db read open opportunities failed: ${openErr.message}`)
+    const openRows = (openData ?? []).map((r) => OpenOppRow.parse(r))
+    const openByKey = new Map(openRows.map((r) => [r.dedup_key, r.id]))
+    const openMomentum = new Map<string, Side>(
+      openRows.filter((r) => r.kind === 'momentum_harvest').map((r) => [r.dedup_key, r.leg_a_side]),
+    )
+
+    // 2b. Pure detection. `now` is the function clock; staleness handled inside.
+    const now = new Date()
+    const detected = [
+      ...detectOpportunities(snapshots, {
+        now,
+        maxStalenessMs: DEFAULT_MAX_STALENESS_MS,
+        thresholds: DEFAULT_THRESHOLDS,
+      }),
+      ...detectMomentum(snapshots, intervalRates, {
+        now,
+        maxStalenessMs: DEFAULT_MAX_STALENESS_MS,
+        openMomentum,
+      }),
+    ]
+    const detectedByKey = new Map(detected.map((o) => [o.dedupKey, o]))
+
+    // 3. Stats history: first write per (instrument, settled interval) wins.
+    const stats = computeFundingStats(intervalRates, now).map((s) => ({
+      instrument_id: s.instrumentId,
+      interval_ts: s.intervalTs.toISOString(),
+      n_intervals: s.nIntervals,
+      mean_apr: s.meanApr,
+      stddev_apr: s.stddevApr,
+      current_apr: s.currentApr,
+      z_score: s.zScore,
+    }))
+    if (stats.length > 0) {
+      const { error } = await supabase
+        .from('funding_stats')
+        .upsert(stats, { onConflict: 'instrument_id,interval_ts', ignoreDuplicates: true })
+      if (error) throw new Error(`db upsert funding_stats failed: ${error.message}`)
+    }
+
+    // 4a. Insert brand-new opps; update APRs of already-open ones in place.
     const toInsert = detected.filter((o) => !openByKey.has(o.dedupKey)).map(toRow)
     if (toInsert.length > 0) {
       const { error } = await supabase.from('opportunities').insert(toInsert)
@@ -136,11 +145,8 @@ Deno.serve(async () => {
       if (error) throw new Error(`db update opportunity ${id} failed: ${error.message}`)
     }
 
-    // 3c. Expire any previously-open opp no longer detected this tick.
-    const staleIds = (openData ?? [])
-      .map((r) => OpenOppRow.parse(r))
-      .filter((r) => !detectedByKey.has(r.dedup_key))
-      .map((r) => r.id)
+    // 4b. Expire any previously-open opp no longer detected this tick.
+    const staleIds = openRows.filter((r) => !detectedByKey.has(r.dedup_key)).map((r) => r.id)
     if (staleIds.length > 0) {
       const { error } = await supabase
         .from('opportunities')
@@ -151,7 +157,10 @@ Deno.serve(async () => {
 
     return Response.json({
       snapshots: snapshots.length,
+      intervalRates: intervalRates.length,
       detected: detected.length,
+      momentum: detected.filter((o) => o.kind === 'momentum_harvest').length,
+      statsRows: stats.length,
       inserted: toInsert.length,
       expired: staleIds.length,
     })

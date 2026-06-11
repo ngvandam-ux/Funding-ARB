@@ -115,6 +115,24 @@ findings below.
 Auto-open for momentum, paper-engine/exit-rule changes, new venues,
 dashboard stats charts.
 
-## Backtest findings
+## Backtest findings (run 2026-06-11 against prod history, 2026-06-02 → 06-10)
 
-_(to be filled after running `docs/momentum-backtest.sql`)_
+30 entry events (HL + OKX only — Binance/Bybit ingest has been dead since
+2026-06-09 00:39 UTC and contributed almost no settled intervals).
+
+- **Mean reversion: CONFIRMED.** 29/30 events reverted to within mean ± 1σ.
+- **But it is FAST: median 3.5 settlements / 4.5 hours to reversion.**
+- **Capture: median $0.03 per $1,000 notional; best $1.12.** Even restricting
+  to the 6 events with |entry APR| ≥ 25 (≈ the live floor), best was $0.47.
+- **Zero of 30 events cleared a $5 round-trip cost hurdle** (old cohort's
+  honest costs: $2.27–$4.62 per $1k position).
+
+**Verdict:** the hypothesis is half right. Spikes do revert — so fast that
+the funding collected during the spike's remaining life is cents, while
+round-trip costs are dollars. Same cost-dominance failure mode that killed
+cohort 1, concentrated into a 4.5-hour window. The detect-only run keeps
+logging forward data (funding_stats + momentum_harvest opportunities), but on
+this evidence momentum_harvest should NOT be promoted to auto-open at $1k
+notional with taker fees. Things that could change the verdict: much larger
+notional (fees amortize no better — they scale), maker-fee execution, or
+spikes an order of magnitude larger than this 9-day sample contained.
